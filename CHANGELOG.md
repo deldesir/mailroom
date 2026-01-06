@@ -1,3 +1,14 @@
+v26.1.0 (2026-01-06)
+-------------------------
+ * Add ordering by id to LoadContacts
+ * Update test database
+ * Remove support for sessions with output in S3
+ * Test against Postgresql 17
+
+v26.0.0 (2026-01-05)
+-------------------------
+ * Update README
+
 v10.3.107 (2025-12-15)
 -------------------------
  * Don't run release job in container

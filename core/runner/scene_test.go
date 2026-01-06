@@ -426,7 +426,7 @@ func TestResumeSession(t *testing.T) {
 	for i, tc := range tcs {
 		testsuite.ResumeSession(t, rt, oa, testdb.Ann, tc.input)
 
-		assertdb.Query(t, rt.DB, `SELECT status, current_flow_uuid::text, call_uuid FROM flows_flowsession WHERE uuid = $1 AND output IS NOT NULL AND output_url IS NULL`, sessionUUID).
+		assertdb.Query(t, rt.DB, `SELECT status, current_flow_uuid::text, call_uuid FROM flows_flowsession WHERE uuid = $1 AND output IS NOT NULL`, sessionUUID).
 			Columns(map[string]any{
 				"status": string(tc.expectedStatus), "current_flow_uuid": tc.expectedCurrentFlow, "call_uuid": nil,
 			}, "%d: session mismatch", i)
@@ -466,7 +466,7 @@ func TestBroadcast(t *testing.T) {
 		{
 			"Data": {
 				"broadcast_uuid": "0199877e-0ed2-790b-b474-35099cea401c",
-				"created_on": "2025-05-04T12:30:47.123456789Z",
+				"created_on": "2025-05-04T12:30:50.123456789Z",
 				"msg": {
 					"channel": {
 						"name": "Twilio",
@@ -480,12 +480,12 @@ func TestBroadcast(t *testing.T) {
 			},
 			"OrgID": 1,
 			"PK": "con#b699a406-7e44-49be-9f01-1a82893e8a10",
-			"SK": "evt#01969b47-096b-76f8-ae7f-f8b243c49ff5"
+			"SK": "evt#01969b47-1523-76f8-bd38-d266ec8d3716"
 		},
 		{
 			"Data": {
 				"broadcast_uuid": "0199877e-0ed2-790b-b474-35099cea401c",
-				"created_on": "2025-05-04T12:30:50.123456789Z",
+				"created_on": "2025-05-04T12:30:47.123456789Z",
 				"msg": {
 					"channel": {
 						"name": "Twilio",
@@ -499,7 +499,7 @@ func TestBroadcast(t *testing.T) {
 			},
 			"OrgID": 1,
 			"PK": "con#a393abc0-283d-4c9b-a1b3-641a035c34bf",
-			"SK": "evt#01969b47-1523-76f8-bd38-d266ec8d3716"
+			"SK": "evt#01969b47-096b-76f8-ae7f-f8b243c49ff5"
 		}
 	]`), jsonx.MustMarshal(testsuite.GetHistoryItems(t, rt, false)))
 

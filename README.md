@@ -4,7 +4,7 @@
 [![Build Status](https://github.com/nyaruka/mailroom/workflows/CI/badge.svg)](https://github.com/nyaruka/mailroom/actions?query=workflow%3ACI)
 [![codecov](https://codecov.io/gh/nyaruka/mailroom/branch/main/graph/badge.svg)](https://codecov.io/gh/nyaruka/mailroom)
 
-Task handling service for [RapidPro](https://rapidpro.io) and [TextIt](https://textit.com).
+Task processor and web service for [RapidPro](https://rapidpro.io) and [TextIt](https://textit.com).
 
 ## Deploying
 
@@ -41,7 +41,6 @@ environment variables and parameters and for more details on each option.
  * `MAILROOM_AWS_SECRET_ACCESS_KEY`: AWS secret access key used to authenticate to AWS
  * `MAILROOM_AWS_REGION`: AWS region (e.g. `eu-west-1`)
  * `MAILROOM_S3_ATTACHMENTS_BUCKET`: name of your S3 bucket (e.g. `mailroom-attachments`)
- * `MAILROOM_S3_SESSIONS_BUCKET`: name of your S3 bucket (e.g. `mailroom-sessions`)
 
 ### Logging and error reporting:
 
