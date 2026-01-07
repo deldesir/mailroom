@@ -40,7 +40,10 @@ require (
 	google.golang.org/api v0.256.0
 	google.golang.org/genai v1.36.0
 	google.golang.org/protobuf v1.36.10
+	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 )
+
+replace github.com/nyaruka/courier => ../courier
 
 require (
 	cel.dev/expr v0.25.1 // indirect
