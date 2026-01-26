@@ -15,7 +15,7 @@ import (
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/core/ivr"
 	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/tasks/realtime/ctasks"
+	"github.com/nyaruka/mailroom/core/tasks/ctasks"
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/mailroom/utils/clogs"
 	"github.com/nyaruka/mailroom/web"
@@ -121,12 +121,11 @@ func handleIncoming(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsse
 	}
 
 	// create an incoming call "task" and handle it to see if we have a trigger
-	task := &ctasks.EventReceivedTask{
+	task := &ctasks.EventReceived{
 		EventType: models.EventTypeIncomingCall,
 		ChannelID: ch.ID(),
 		URNID:     cu.ID,
 		Extra:     nil,
-		CreatedOn: time.Now(),
 	}
 	scene, err := task.Handle(ctx, rt, oa, contact, call)
 	if err != nil {

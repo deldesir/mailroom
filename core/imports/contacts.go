@@ -8,6 +8,7 @@ import (
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/flows/events"
 	"github.com/nyaruka/goflow/flows/modifiers"
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/runner"
@@ -39,6 +40,7 @@ func ImportBatch(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets,
 
 	// create our work data for each contact being created or updated
 	imports := make([]*importContact, len(specs))
+	importsByContact := make(map[*flows.Contact]*importContact, len(specs))
 	for i := range imports {
 		imports[i] = &importContact{record: b.RecordStart + i, spec: specs[i]}
 	}
@@ -50,20 +52,34 @@ func ImportBatch(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets,
 	// gather up contacts and modifiers
 	mcs := make([]*models.Contact, 0, len(imports))
 	contacts := make([]*flows.Contact, 0, len(imports))
-	mods := make(map[flows.ContactUUID][]flows.Modifier, len(imports))
+	mods := make(map[models.ContactID][]flows.Modifier, len(imports))
 	for _, imp := range imports {
 		// ignore errored imports which couldn't get/create a contact
 		if imp.contact != nil {
 			mcs = append(mcs, imp.contact)
 			contacts = append(contacts, imp.flowContact)
-			mods[imp.flowContact.UUID()] = imp.mods
+			mods[imp.contact.ID()] = imp.mods
+			importsByContact[imp.flowContact] = imp
 		}
 	}
 
 	// and apply in bulk
-	_, err := runner.BulkModify(ctx, rt, oa, userID, mcs, contacts, mods)
+	eventsByContact, err := runner.ModifyWithoutLock(ctx, rt, oa, userID, mcs, contacts, mods, models.ViaImport)
 	if err != nil {
 		return fmt.Errorf("error applying modifiers: %w", err)
+	}
+
+	// extract certain errors from events
+	for contact, evts := range eventsByContact {
+		for _, evt := range evts {
+			switch typed := evt.(type) {
+			case *events.Error:
+				if typed.Code == events.ErrorCodeURNTaken {
+					imp := importsByContact[contact]
+					imp.errors = append(imp.errors, fmt.Sprintf("URN %s already taken by another contact", typed.Extra["urn"]))
+				}
+			}
+		}
 	}
 
 	if err := markBatchComplete(ctx, rt.DB, b, imports); err != nil {

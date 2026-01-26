@@ -1,3 +1,55 @@
+v26.1.10 (2026-01-22)
+-------------------------
+ * Contact modify endpoint should only return contacts in testing mode
+
+v26.1.9 (2026-01-22)
+-------------------------
+ * Add events to modify responses to match other endpoints
+ * Interrupt endpoint should return history events
+ * Rework locking for contact modification and interruption
+
+v26.1.8 (2026-01-19)
+-------------------------
+ * Rework interrput_channel task so interrupted contacts go thru proper event pipelines
+ * Remove no longer used code for overriding flow definitions in simulations
+ * Remove use of Msg.external_id
+
+v26.1.7 (2026-01-19)
+-------------------------
+ * Add via on ticket endpoints as well
+ * Add via field to contact create and modify endpoints
+
+v26.1.6 (2026-01-15)
+-------------------------
+ * Never credit error events to users
+ * Don't persist URN-taken error events that occur via imports
+ * Record on events if they happened via import
+
+v26.1.5 (2026-01-15)
+-------------------------
+ * Persist URN taken error events
+ * Update to latest goflow which improves more error events
+
+v26.1.4 (2026-01-14)
+-------------------------
+ * Update to latest goflow which improves failure events
+ * Increase max steps per sprint to 250
+ * Persist failure events from failed sessions
+
+v26.1.3 (2026-01-13)
+-------------------------
+ * Ignore created_on on event_received tasks and just use now
+
+v26.1.2 (2026-01-13)
+-------------------------
+ * Prevent URN stealing
+ * Update to latest goflow
+ * Revert to testing on PG15
+
+v26.1.1 (2026-01-08)
+-------------------------
+ * Add Msg.external_identifier field
+
 v26.1.0 (2026-01-06)
 -------------------------
  * Add ordering by id to LoadContacts

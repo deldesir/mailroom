@@ -32,8 +32,8 @@ import (
 
 func init() {
 	goflow.RegisterCheckSendable(func(rt *runtime.Runtime) flows.CheckSendableCallback {
-		return func(sa flows.SessionAssets, contact *flows.Contact, content *flows.MsgContent) (flows.UnsendableReason, error) {
-			return msgCheckSendable(rt, orgFromAssets(sa), ContactID(contact.ID()), content)
+		return func(ctx context.Context, sa flows.SessionAssets, contact *flows.Contact, content *flows.MsgContent) (flows.UnsendableReason, error) {
+			return msgCheckSendable(ctx, rt, orgFromAssets(sa), ContactID(contact.ID()), content)
 		}
 	})
 }
@@ -167,19 +167,19 @@ type Msg struct {
 		Locale       i18n.Locale    `db:"locale"`
 		Templating   *Templating    `db:"templating"`
 
-		HighPriority bool          `db:"high_priority"`
-		Direction    Direction     `db:"direction"`
-		Status       MsgStatus     `db:"status"`
-		Visibility   MsgVisibility `db:"visibility"`
-		IsAndroid    bool          `db:"is_android"`
-		MsgType      MsgType       `db:"msg_type"`
-		MsgCount     int           `db:"msg_count"`
-		CreatedOn    time.Time     `db:"created_on"`
-		ModifiedOn   time.Time     `db:"modified_on"`
-		ExternalID   null.String   `db:"external_id"`
-		ChannelID    ChannelID     `db:"channel_id"`
-		ContactID    ContactID     `db:"contact_id"`
-		ContactURNID URNID         `db:"contact_urn_id"`
+		HighPriority       bool          `db:"high_priority"`
+		Direction          Direction     `db:"direction"`
+		Status             MsgStatus     `db:"status"`
+		Visibility         MsgVisibility `db:"visibility"`
+		IsAndroid          bool          `db:"is_android"`
+		MsgType            MsgType       `db:"msg_type"`
+		MsgCount           int           `db:"msg_count"`
+		CreatedOn          time.Time     `db:"created_on"`
+		ModifiedOn         time.Time     `db:"modified_on"`
+		ExternalIdentifier null.String   `db:"external_identifier"`
+		ChannelID          ChannelID     `db:"channel_id"`
+		ContactID          ContactID     `db:"contact_id"`
+		ContactURNID       URNID         `db:"contact_urn_id"`
 
 		SentOn       *time.Time      `db:"sent_on"`
 		ErrorCount   int             `db:"error_count"`
@@ -210,7 +210,7 @@ func (m *Msg) Type() MsgType                 { return m.m.MsgType }
 func (m *Msg) ErrorCount() int               { return m.m.ErrorCount }
 func (m *Msg) NextAttempt() *time.Time       { return m.m.NextAttempt }
 func (m *Msg) FailedReason() MsgFailedReason { return m.m.FailedReason }
-func (m *Msg) ExternalID() string            { return string(m.m.ExternalID) }
+func (m *Msg) ExternalIdentifier() string    { return string(m.m.ExternalIdentifier) }
 func (m *Msg) MsgCount() int                 { return m.m.MsgCount }
 func (m *Msg) ChannelID() ChannelID          { return m.m.ChannelID }
 func (m *Msg) OrgID() OrgID                  { return m.m.OrgID }
@@ -506,7 +506,7 @@ SELECT
 	next_attempt,
 	failed_reason,
 	coalesce(high_priority, FALSE) as high_priority,
-	external_id,
+	external_identifier,
 	channel_id,
 	contact_id,
 	contact_urn_id,
@@ -547,7 +547,7 @@ SELECT
 	m.next_attempt,
 	m.failed_reason,
 	m.high_priority,
-	m.external_id,
+	m.external_identifier,
 	m.channel_id,
 	m.contact_id,
 	m.contact_urn_id,
@@ -858,7 +858,7 @@ func FailChannelMessages(ctx context.Context, db *sql.DB, orgID OrgID, channelID
 }
 
 // CreateMsgOut creates a new outgoing message to the given contact, resolving the destination etc
-func CreateMsgOut(rt *runtime.Runtime, oa *OrgAssets, c *flows.Contact, content *flows.MsgContent, templateID TemplateID, templateVariables []string, locale i18n.Locale, expressionsContext *types.XObject) (*flows.MsgOut, error) {
+func CreateMsgOut(ctx context.Context, rt *runtime.Runtime, oa *OrgAssets, c *flows.Contact, content *flows.MsgContent, templateID TemplateID, templateVariables []string, locale i18n.Locale, expressionsContext *types.XObject) (*flows.MsgOut, error) {
 	// resolve URN + channel for this contact
 	urn := urns.NilURN
 	var channel *Channel
@@ -928,7 +928,7 @@ func CreateMsgOut(rt *runtime.Runtime, oa *OrgAssets, c *flows.Contact, content 
 		unsendableReason = flows.UnsendableReasonNoRoute
 	} else {
 		var err error
-		unsendableReason, err = msgCheckSendable(rt, oa.Org(), ContactID(c.ID()), content)
+		unsendableReason, err = msgCheckSendable(ctx, rt, oa.Org(), ContactID(c.ID()), content)
 		if err != nil {
 			return nil, fmt.Errorf("error checking if message is sendable: %w", err)
 		}
@@ -958,7 +958,7 @@ func DeleteMessages(ctx context.Context, tx *sqlx.Tx, orgID OrgID, uuids []flows
 	return nil
 }
 
-func msgCheckSendable(rt *runtime.Runtime, org *Org, contactID ContactID, content *flows.MsgContent) (flows.UnsendableReason, error) {
+func msgCheckSendable(ctx context.Context, rt *runtime.Runtime, org *Org, contactID ContactID, content *flows.MsgContent) (flows.UnsendableReason, error) {
 	if org.Suspended() {
 		return UnsendableReasonOrgSuspended, nil
 	}

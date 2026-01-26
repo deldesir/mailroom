@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gomodule/redigo/redis"
 	"github.com/lib/pq"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil"
@@ -21,9 +22,20 @@ import (
 	"github.com/nyaruka/goflow/envs"
 	"github.com/nyaruka/goflow/excellent/types"
 	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/mailroom/core/goflow"
+	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/null/v3"
+	"github.com/nyaruka/vkutil/locks"
 	"github.com/vinovest/sqlx"
 )
+
+func init() {
+	goflow.RegisterClaimURN(func(rt *runtime.Runtime) flows.ClaimURNCallback {
+		return func(ctx context.Context, sa flows.SessionAssets, contact *flows.Contact, urn urns.URN) (bool, error) {
+			return ContactClaimURN(ctx, rt, orgFromAssets(sa), contact, urn)
+		}
+	})
+}
 
 // URNID is our type for urn ids, which can be null
 type URNID int
@@ -904,10 +916,10 @@ SELECT id, org_id, contact_id, identity, priority, scheme, path, display, auth_t
 const sqlInsertContactURN = `
 INSERT INTO contacts_contacturn( contact_id,  identity,  path,  display,  auth_tokens,  scheme,  priority,  org_id)
 				         VALUES(:contact_id, :identity, :path, :display, :auth_tokens, :scheme, :priority, :org_id)
-ON CONFLICT(identity, org_id) DO UPDATE SET contact_id = :contact_id, priority = :priority`
+ON CONFLICT(identity, org_id) DO UPDATE SET contact_id = :contact_id, priority = :priority WHERE contacts_contacturn.contact_id IS NULL`
 
-// CreateOrStealURN will either create a new URN or steal an existing one
-func CreateOrStealURN(ctx context.Context, db DBorTx, oa *OrgAssets, contactID ContactID, u urns.URN) (*ContactURN, error) {
+// CreateOrClaimURN will either create a new URN or claim an existing orphaned one
+func CreateOrClaimURN(ctx context.Context, db DBorTx, oa *OrgAssets, contactID ContactID, u urns.URN) (*ContactURN, error) {
 	// look for an existing URN with this identity
 	rows, err := db.QueryxContext(ctx, sqlSelectURNByIdentity, u.Identity(), oa.OrgID())
 	if err != nil {
@@ -942,13 +954,13 @@ func CreateOrStealURN(ctx context.Context, db DBorTx, oa *OrgAssets, contactID C
 	if urn.ID == NilURNID {
 		rows, err := db.QueryxContext(ctx, sqlSelectURNByIdentity, u.Identity(), oa.OrgID())
 		if err != nil {
-			return nil, fmt.Errorf("error selecting URN by identity after stealing: %s", u.Identity())
+			return nil, fmt.Errorf("error selecting URN by identity after claiming: %s", u.Identity())
 		}
 		defer rows.Close()
 
 		if rows.Next() {
 			if err := rows.StructScan(urn); err != nil {
-				return nil, fmt.Errorf("error scanning stolen contact urn: %w", err)
+				return nil, fmt.Errorf("error scanning claimed contact urn: %w", err)
 			}
 		}
 	}
@@ -1101,16 +1113,13 @@ func UpdateContactModifiedOn(ctx context.Context, db DBorTx, contactIDs []Contac
 }
 
 // UpdateContactURNs updates the contact urns in our database to match the passed in changes
-func UpdateContactURNs(ctx context.Context, db DBorTx, oa *OrgAssets, changes []*ContactURNsChanged) error {
-	// new URNS to insert and existing ones to update
-	inserts := make([]*ContactURN, 0, len(changes))
+func UpdateContactURNs(ctx context.Context, rt *runtime.Runtime, db DBorTx, oa *OrgAssets, changes []*ContactURNsChanged) error {
+	// new URNS to insert/claim and existing ones to update
+	claims := make([]*ContactURN, 0, len(changes))
 	updates := make([]*ContactURN, 0, len(changes))
 
 	contactIDs := make([]ContactID, 0)
 	updatedURNIDs := make([]URNID, 0)
-
-	// identities we are inserting
-	identities := make([]string, 0, 1)
 
 	// for each of our changes (one per contact)
 	for _, change := range changes {
@@ -1133,7 +1142,7 @@ func UpdateContactURNs(ctx context.Context, db DBorTx, oa *OrgAssets, changes []
 				updatedURNIDs = append(updatedURNIDs, cu.ID)
 			} else {
 				// new URN, add it instead
-				inserts = append(inserts, &ContactURN{
+				claims = append(claims, &ContactURN{
 					OrgID:     oa.OrgID(),
 					ContactID: change.Contact.ID(),
 					Identity:  urn.Identity(),
@@ -1142,8 +1151,6 @@ func UpdateContactURNs(ctx context.Context, db DBorTx, oa *OrgAssets, changes []
 					Display:   null.String(urn.Display()),
 					Priority:  priority,
 				})
-
-				identities = append(identities, urn.Identity().String())
 			}
 
 			// decrease our priority for the next URN
@@ -1152,13 +1159,12 @@ func UpdateContactURNs(ctx context.Context, db DBorTx, oa *OrgAssets, changes []
 	}
 
 	// first update existing URNs
-	err := UpdateURNPriorityAndChannel(ctx, db, updates)
-	if err != nil {
+	if err := UpdateURNPriorityAndChannel(ctx, db, updates); err != nil {
 		return fmt.Errorf("error updating urns: %w", err)
 	}
 
 	// then detach any URNs that weren't updated (the ones we're not keeping)
-	_, err = db.ExecContext(
+	_, err := db.ExecContext(
 		ctx,
 		`UPDATE contacts_contacturn SET contact_id = NULL WHERE contact_id = ANY($1) AND id != ALL($2)`,
 		pq.Array(contactIDs),
@@ -1168,46 +1174,24 @@ func UpdateContactURNs(ctx context.Context, db DBorTx, oa *OrgAssets, changes []
 		return fmt.Errorf("error detaching urns: %w", err)
 	}
 
-	if len(inserts) > 0 {
-		// find the unique ids of the contacts that may be affected by our URN inserts
-		orphanedIDs, err := queryContactIDs(ctx, db, `SELECT contact_id FROM contacts_contacturn WHERE identity = ANY($1) AND org_id = $2 AND contact_id IS NOT NULL`, pq.Array(identities), oa.OrgID())
-		if err != nil {
-			return fmt.Errorf("error finding contacts for URNs: %w", err)
-		}
+	if len(claims) > 0 {
+		vc := rt.VK.Get()
+		defer vc.Close()
 
-		// then insert new urns, we do these one by one since we have to deal with conflicts
-		for _, insert := range inserts {
-			_, err := db.NamedExecContext(ctx, sqlInsertContactURN, insert)
+		// then insert/claim new urns, we do these one by one since we have to deal with conflicts
+		for _, urn := range claims {
+			_, err := db.NamedExecContext(ctx, sqlInsertContactURN, urn)
 			if err != nil {
 				return fmt.Errorf("error inserting new urns: %w", err)
 			}
-		}
 
-		// finally update the contacts who had URNs stolen from them
-		if len(orphanedIDs) > 0 {
-			affected, err := LoadContacts(ctx, db, oa, orphanedIDs)
-			if err != nil {
-				return fmt.Errorf("error loading contacts affecting by URN stealing: %w", err)
+			// clear Valkey record of this claim
+			claimKey := fmt.Sprintf("urn-claim:%d:%s", oa.OrgID(), urn.Identity)
+
+			if _, err := redis.DoContext(vc, ctx, "DEL", claimKey); err != nil {
+				return fmt.Errorf("error clearing URN claim in Valkey: %w", err)
 			}
 
-			// turn them into flow contacts..
-			flowOrphans := make([]*flows.Contact, len(affected))
-			for i, c := range affected {
-				flowOrphans[i], err = c.EngineContact(oa)
-				if err != nil {
-					return fmt.Errorf("error creating orphan flow contact: %w", err)
-				}
-			}
-
-			// and re-calculate their dynamic groups
-			if err := CalculateDynamicGroups(ctx, db, oa, flowOrphans); err != nil {
-				return fmt.Errorf("error re-calculating dynamic groups for orphaned contacts: %w", err)
-			}
-
-			// and mark them as updated
-			if err := UpdateContactModifiedOn(ctx, db, orphanedIDs); err != nil {
-				return fmt.Errorf("error updating orphaned contacts: %w", err)
-			}
 		}
 	}
 
@@ -1268,41 +1252,28 @@ type contactStatusUpdate struct {
 
 // UpdateContactStatus updates the contacts status as the passed changes
 func UpdateContactStatus(ctx context.Context, db DBorTx, changes []*ContactStatusChange) error {
-
-	archiveTriggersForContactIDs := make([]ContactID, 0, len(changes))
-	statusUpdates := make([]any, 0, len(changes))
+	updates := make([]any, 0, len(changes))
+	archiveTriggers := make([]ContactID, 0, len(changes))
 
 	for _, ch := range changes {
-		blocked := ch.Status == flows.ContactStatusBlocked
-		stopped := ch.Status == flows.ContactStatusStopped
 		status := ContactToModelStatus[ch.Status]
 
-		if blocked || stopped {
-			archiveTriggersForContactIDs = append(archiveTriggersForContactIDs, ch.ContactID)
+		if ch.Status != flows.ContactStatusActive {
+			archiveTriggers = append(archiveTriggers, ch.ContactID)
 		}
 
-		statusUpdates = append(
-			statusUpdates,
-			&contactStatusUpdate{
-				ContactID: ch.ContactID,
-				Status:    status,
-			},
-		)
-
+		updates = append(updates, &contactStatusUpdate{ContactID: ch.ContactID, Status: status})
 	}
 
-	err := ArchiveContactTriggers(ctx, db, archiveTriggersForContactIDs)
-	if err != nil {
-		return fmt.Errorf("error archiving triggers for blocked or stopped contacts: %w", err)
+	if err := ArchiveContactTriggers(ctx, db, archiveTriggers); err != nil {
+		return fmt.Errorf("error archiving triggers for non-active contacts: %w", err)
 	}
 
-	// do our status update
-	err = BulkQuery(ctx, "updating contact statuses", db, sqlUpdateContactStatus, statusUpdates)
-	if err != nil {
+	if err := BulkQuery(ctx, "updating contact statuses", db, sqlUpdateContactStatus, updates); err != nil {
 		return fmt.Errorf("error updating contact statuses: %w", err)
 	}
 
-	return err
+	return nil
 }
 
 const sqlUpdateContactStatus = `
@@ -1310,3 +1281,47 @@ UPDATE contacts_contact c
    SET status = r.status, modified_on = NOW()
   FROM (VALUES(:id::int, :status)) AS r(id, status)
  WHERE c.id = r.id`
+
+// ContactClaimURN is used by the engine to "claim" a URN before that claim is committed to the database
+func ContactClaimURN(ctx context.Context, rt *runtime.Runtime, org *Org, contact *flows.Contact, urn urns.URN) (bool, error) {
+	locker := locks.NewLocker(fmt.Sprintf("urn-claims:%d", org.ID()), time.Second*30)
+	lock, err := locker.Grab(ctx, rt.VK, time.Second*5)
+	if err != nil {
+		return false, fmt.Errorf("error grabbing lock for URN claiming: %w", err)
+	}
+	defer locker.Release(ctx, rt.VK, lock)
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	identity := urn.Identity()
+	claimKey := fmt.Sprintf("urn-claim:%d:%s", org.ID(), identity)
+
+	owner, err := redis.Int64(redis.DoContext(vc, ctx, "GET", claimKey))
+	if err != nil && err != redis.ErrNil {
+		return false, fmt.Errorf("error checking URN claim in Valkey: %w", err)
+	}
+
+	if owner != 0 {
+		return contact.ID() == flows.ContactID(owner), nil
+	}
+
+	// check if URN is claimed in database
+	var dbOwner ContactID
+	err = rt.DB.GetContext(ctx, &dbOwner, `SELECT contact_id FROM contacts_contacturn WHERE org_id = $1 AND identity = $2 AND contact_id IS NOT NULL`, org.ID(), identity)
+	if err != nil && err != sql.ErrNoRows {
+		return false, fmt.Errorf("error checking URN ownership in database: %w", err)
+	}
+	if dbOwner != NilContactID && dbOwner != ContactID(contact.ID()) {
+		return false, nil
+	}
+
+	// Record URN as claimed in Valkey - this will be cleared in UpdateContactURNs when the claim is committed to the
+	// database. There's potentially a problem here if session errors because we'll still have this claim lingering
+	// for 60 seconds... but that doesn't happen very often
+	if _, err := redis.DoContext(vc, ctx, "SET", claimKey, contact.ID(), "EX", 60); err != nil {
+		return false, fmt.Errorf("error recording URN claim in Valkey: %w", err)
+	}
+
+	return true, nil
+}
