@@ -56,7 +56,7 @@ func handleInterrupt(ctx context.Context, rt *runtime.Runtime, r *interruptReque
 			return nil, 0, fmt.Errorf("error loading org assets: %w", err)
 		}
 
-		eventsByContact, skipped, err := runner.InterruptWithLock(ctx, rt, oa, r.ContactIDs, flows.SessionStatusInterrupted)
+		eventsByContact, skipped, err := runner.InterruptWithLock(ctx, rt, oa, r.ContactIDs, nil, flows.SessionStatusInterrupted)
 		if err != nil {
 			return nil, 0, fmt.Errorf("error interrupting contact: %w", err)
 		}
@@ -68,7 +68,7 @@ func handleInterrupt(ctx context.Context, rt *runtime.Runtime, r *interruptReque
 		resp.Skipped = skipped
 
 	} else if len(r.ContactIDs) > 0 {
-		task := &tasks.InterruptSessions{ContactIDs: r.ContactIDs}
+		task := &tasks.InterruptContacts{ContactIDs: r.ContactIDs}
 		if err := tasks.Queue(ctx, rt, rt.Queues.Batch, r.OrgID, task, true); err != nil {
 			return nil, 0, fmt.Errorf("error queuing interrupt flow task: %w", err)
 		}

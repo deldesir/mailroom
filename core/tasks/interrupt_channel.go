@@ -3,12 +3,12 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/msgio"
-	"github.com/nyaruka/mailroom/core/runner"
 	"github.com/nyaruka/mailroom/runtime"
 )
 
@@ -65,21 +65,24 @@ func (t *InterruptChannel) Perform(ctx context.Context, rt *runtime.Runtime, oa 
 }
 
 func (t *InterruptChannel) interruptIVRSessions(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
-	contactIDs := make([]models.ContactID, 0, 10)
-
 	// fail any calls that are pending, queued or errored
 	if _, err := rt.DB.ExecContext(ctx, `UPDATE ivr_call SET status = 'F', modified_on = NOW() WHERE channel_id = $1 AND status IN ('P', 'Q', 'E')`, t.ChannelID); err != nil {
 		return fmt.Errorf("error failing queued calls on channel %d: %w", t.ChannelID, err)
 	}
 
-	// find all contacts with calls in progress...
-	if err := rt.DB.SelectContext(ctx, &contactIDs, `SELECT contact_id FROM ivr_call WHERE channel_id = $1 AND status = 'I' AND session_uuid IS NOT NULL`, t.ChannelID); err != nil {
-		return fmt.Errorf("error selecting contacts with calls on channel %d: %w", t.ChannelID, err)
+	// get the ongoing sessions from calls on this channel
+	sessionRefs, err := models.GetWaitingSessionsForChannel(ctx, rt.DB, t.ChannelID)
+	if err != nil {
+		return fmt.Errorf("error selecting sessions from calls on channel %d: %w", t.ChannelID, err)
 	}
 
-	// and interrupt their sessions
-	if _, _, err := runner.InterruptWithLock(ctx, rt, oa, contactIDs, flows.SessionStatusInterrupted); err != nil {
-		return fmt.Errorf("error interrupting contacts with calls on channel %d: %w", t.ChannelID, err)
+	// and queue up batch tasks to interrupt them
+	for batch := range slices.Chunk(sessionRefs, interruptSessionBatchSize) {
+		task := &InterruptSessionBatch{Sessions: batch, Status: flows.SessionStatusInterrupted}
+
+		if err := Queue(ctx, rt, rt.Queues.Batch, oa.OrgID(), task, false); err != nil {
+			return fmt.Errorf("error queueing interrupt session batch task for channel #%d: %w", t.ChannelID, err)
+		}
 	}
 
 	return nil

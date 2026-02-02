@@ -1,3 +1,43 @@
+v26.1.18 (2026-01-29)
+-------------------------
+ * Replace final usage of ExitSessions
+
+v26.1.17 (2026-01-28)
+-------------------------
+ * interrupt_channel task should defer to interrupt_session_batch task for session interruption
+ * Remove no longer used bulk_session_expire task
+
+v26.1.16 (2026-01-27)
+-------------------------
+ * Fix using InterruptSessionBatch to expire sessions
+
+v26.1.15 (2026-01-27)
+-------------------------
+ * Use interrupt session batch task for session expiration fires
+
+v26.1.14 (2026-01-27)
+-------------------------
+ * Use new interrupt_contacts task type for contact/interrupt endpoint
+ * Make status required on InterruptSessionBatch task
+
+v26.1.13 (2026-01-27)
+-------------------------
+ * Add status to interrupt_session_batch tasks
+ * Add new interrupt_contacts task to replace interrupt_sessions
+
+v26.1.12 (2026-01-27)
+-------------------------
+ * Use new interrupt_flow task for flow/interrupt endpoint
+
+v26.1.11 (2026-01-26)
+-------------------------
+ * Update deps including goflow
+ * Rework session interruption
+ * Remove deprecated fields from modify endpoint responses
+ * Use panic instead of error for missing event handler
+ * Return even non-persisted events from endpoints
+ * Use runner.LockAndLoad for flow starts as well
+
 v26.1.10 (2026-01-22)
 -------------------------
  * Contact modify endpoint should only return contacts in testing mode
