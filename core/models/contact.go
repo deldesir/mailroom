@@ -176,17 +176,6 @@ func (c *Contact) FindTicket(uuid flows.TicketUUID) *Ticket {
 	return nil
 }
 
-// Unstop sets the status to stopped for this contact
-func (c *Contact) Unstop(ctx context.Context, db DBorTx) error {
-	_, err := db.ExecContext(ctx, `UPDATE contacts_contact SET status = 'A', modified_on = NOW() WHERE id = $1`, c.id)
-	if err != nil {
-		return fmt.Errorf("error unstopping contact: %w", err)
-	}
-
-	c.status = ContactStatusActive
-	return nil
-}
-
 // UpdateLastSeenOn updates last seen on (and modified on)
 func (c *Contact) UpdateLastSeenOn(ctx context.Context, db DBorTx, lastSeenOn time.Time) error {
 	_, err := db.ExecContext(ctx, `UPDATE contacts_contact SET last_seen_on = $2, modified_on = NOW() WHERE id = $1`, c.ID(), lastSeenOn)
@@ -1245,24 +1234,30 @@ type ContactStatusChange struct {
 	Status    flows.ContactStatus
 }
 
-type contactStatusUpdate struct {
-	ContactID ContactID     `db:"id"`
-	Status    ContactStatus `db:"status"`
-}
+const sqlUpdateContactStatus = `
+UPDATE contacts_contact c
+   SET status = r.status
+  FROM (VALUES(:id::int, :status)) AS r(id, status)
+ WHERE c.id = r.id`
 
 // UpdateContactStatus updates the contacts status as the passed changes
 func UpdateContactStatus(ctx context.Context, db DBorTx, changes []*ContactStatusChange) error {
+	type dbUpdate struct {
+		ContactID ContactID     `db:"id"`
+		Status    ContactStatus `db:"status"`
+	}
+
 	updates := make([]any, 0, len(changes))
 	archiveTriggers := make([]ContactID, 0, len(changes))
 
 	for _, ch := range changes {
-		status := ContactToModelStatus[ch.Status]
+		dbStatus := ContactToModelStatus[ch.Status]
 
 		if ch.Status != flows.ContactStatusActive {
 			archiveTriggers = append(archiveTriggers, ch.ContactID)
 		}
 
-		updates = append(updates, &contactStatusUpdate{ContactID: ch.ContactID, Status: status})
+		updates = append(updates, &dbUpdate{ContactID: ch.ContactID, Status: dbStatus})
 	}
 
 	if err := ArchiveContactTriggers(ctx, db, archiveTriggers); err != nil {
@@ -1275,12 +1270,6 @@ func UpdateContactStatus(ctx context.Context, db DBorTx, changes []*ContactStatu
 
 	return nil
 }
-
-const sqlUpdateContactStatus = `
-UPDATE contacts_contact c
-   SET status = r.status, modified_on = NOW()
-  FROM (VALUES(:id::int, :status)) AS r(id, status)
- WHERE c.id = r.id`
 
 // ContactClaimURN is used by the engine to "claim" a URN before that claim is committed to the database
 func ContactClaimURN(ctx context.Context, rt *runtime.Runtime, org *Org, contact *flows.Contact, urn urns.URN) (bool, error) {
