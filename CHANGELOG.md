@@ -1,3 +1,12 @@
+v26.1.21 (2026-02-04)
+-------------------------
+ * Tweak updating of last seen to use value from event
+
+v26.1.20 (2026-02-03)
+-------------------------
+ * Update goflow which adds type field to QuickReply
+ * Do last_seen_on update within the scene
+
 v26.1.19 (2026-02-03)
 -------------------------
  * Do initialization of new contacts and unstopping of stopped contacts within the scene
