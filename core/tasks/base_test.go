@@ -10,13 +10,13 @@ import (
 )
 
 func TestReadTask(t *testing.T) {
-	task, err := tasks.ReadTask("populate_dynamic_group", []byte(`{
+	task, err := tasks.ReadTask("populate_group", []byte(`{
 		"group_id": 23,
 		"query": "gender = F"
 	}`))
 	require.NoError(t, err)
 
-	typedTask := task.(*tasks.PopulateQueryGroup)
+	typedTask := task.(*tasks.PopulateGroup)
 	assert.Equal(t, models.GroupID(23), typedTask.GroupID)
 	assert.Equal(t, "gender = F", typedTask.Query)
 }

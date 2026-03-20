@@ -176,9 +176,9 @@ func TestNewOutgoingFlowMsg(t *testing.T) {
 	// check nil failed reasons are saved as NULLs
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE failed_reason IS NOT NULL`).Returns(2)
 
-	// check encoding of quick replies
-	assertdb.Query(t, rt.DB, `SELECT quick_replies[1] FROM msgs_msg WHERE id = 30000`).Returns("yes<extra>if you want")
-	assertdb.Query(t, rt.DB, `SELECT quick_replies[2] FROM msgs_msg WHERE id = 30000`).Returns("no")
+	// check writing of quick replies
+	assertdb.Query(t, rt.DB, `SELECT quickreplies::text FROM msgs_msg WHERE id = 30000`).Returns(`[{"text": "yes", "type": "text", "extra": "if you want"}, {"text": "no", "type": "text"}]`)
+	assertdb.Query(t, rt.DB, `SELECT quickreplies FROM msgs_msg WHERE id = 30001`).Returns(nil)
 }
 
 func TestGetMessagesByUUID(t *testing.T) {
@@ -467,7 +467,7 @@ func TestNewIVRMessages(t *testing.T) {
 		Columns(map[string]any{"text": "Hello", "status": "W", "msg_type": "V", "flow_id": testdb.Favorites.ID})
 
 	flowIn := flows.NewMsgIn(testdb.Ann.URN, vonage.Reference(), "1", nil, "")
-	eventIn := events.NewMsgReceived(flowIn)
+	eventIn := events.NewMsgReceived(flowIn, "")
 	dbIn := models.NewIncomingIVR(rt.Config, testdb.Org1.ID, call, flow, eventIn)
 
 	assert.Equal(t, eventIn.UUID(), dbIn.UUID())

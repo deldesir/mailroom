@@ -1,3 +1,232 @@
+v26.1.70 (2026-03-19)
+-------------------------
+ * Move message indexing from OpenSearch to Elasticsearch
+
+v26.1.69 (2026-03-19)
+-------------------------
+ * Update goflow to v0.271.0 which adds flow spec 14.4.0
+ * Internalize v1/v2 ES index comparison into search functions
+
+v26.1.68 (2026-03-18)
+-------------------------
+ * Add messages mode to mrindex command
+
+v26.1.67 (2026-03-18)
+-------------------------
+ * Reduce elastic writer batch size to 250
+ * Tweak OS message index
+
+v26.1.66 (2026-03-18)
+-------------------------
+ * Switch contact indexing from OpenSearch to Elastic v2 index
+
+v26.1.65 (2026-03-12)
+-------------------------
+ * Change some contact index fields to be keyword
+ * Deindex contacts from OpenSearch as well as Elastic
+
+v26.1.64 (2026-03-12)
+-------------------------
+ * Rename db_id to id to match ES index
+ * Use database ID as _id in OpenSearch contacts index
+
+v26.1.63 (2026-03-12)
+-------------------------
+ * Use docvalue_fields instead of _source for OS contact search
+
+v26.1.62 (2026-03-12)
+-------------------------
+ * Use filter context instead of must in contact search queries
+
+v26.1.61 (2026-03-11)
+-------------------------
+ * Use background context for deferred PIT cleanup
+ * Fix requeuing of failed contact tasks
+ * Fix PIT leak on error and enforce limit in paginated contact search
+
+v26.1.60 (2026-03-11)
+-------------------------
+ * Add metrics reporting for contact search duration by backend (ES/OS)
+ * Add config to control proportion of searches verified against OpenSearch
+ * Run contact search against both ES and OpenSearch, log mismatches
+
+v26.1.59 (2026-03-10)
+-------------------------
+ * Update to latest goflow and gocommon
+
+v26.1.58 (2026-03-10)
+-------------------------
+ * Fix GetContactIDsPage passing NilContactID as NULL to SQL
+
+v26.1.57 (2026-03-10)
+-------------------------
+ * Fix goreleaser config
+
+v26.1.56 (2026-03-09)
+-------------------------
+ * Use contacts as name of index (can be alias for contacts-v1 in prod)
+ * Add mrindex command to re-index all contacts
+ * Rename legacy_id to db_id in OpenSearch contacts index
+ * Add OpenSearch backend support for contact search queries
+
+v26.1.55 (2026-03-09)
+-------------------------
+ * Rename legacy_id in context index since it will always be needed for ref in queries
+
+v26.1.54 (2026-03-05)
+-------------------------
+ * Enable contact indexing to OpenSearch generally
+ * Add contact reindex endpoint
+
+v26.1.53 (2026-03-04)
+-------------------------
+ * Add new Counter util for tracking progress of batch tasks
+ * Rework populate_group task to use batch sub-tasks
+
+v26.1.52 (2026-03-03)
+-------------------------
+ * Flow spec v14.3.1
+
+v26.1.51 (2026-03-03)
+-------------------------
+ * Update to latest goflow
+
+v26.1.50 (2026-03-03)
+-------------------------
+ * Update to latest goflow
+ * Convert query group population to use event pipeline
+ * Start indexing contacts - skipping flow_history_ids for now
+ * Make OpenSearch required in config
+
+v26.1.49 (2026-03-02)
+-------------------------
+ * Tweak format of response from system/latency
+
+v26.1.48 (2026-03-02)
+-------------------------
+ * Add system/latencies endpoint to expose this info to RapidPro
+ * Start recording org specific ctask latencies to Valkey
+
+v26.1.47 (2026-02-27)
+-------------------------
+ * Improve experimental message search
+
+v26.1.46 (2026-02-26)
+-------------------------
+ * Add doc_values=false to messages index template
+ * Add in_ticket boolean field to message docs
+
+v26.1.45 (2026-02-26)
+-------------------------
+ * Remove total from message search results
+
+v26.1.44 (2026-02-26)
+-------------------------
+ * Exclude IVR messages from OpenSearch indexing
+ * Add optional contact_uuid filter to /msg/search endpoint
+ * Index all messages that are not from flows or broadcasts
+ * Deindex contact messages when deindexing a contact
+
+v26.1.43 (2026-02-25)
+-------------------------
+ * Rework OpenSearch experiment to work against a regular cluster
+
+v26.1.42 (2026-02-24)
+-------------------------
+ * Revert change to make OpenSearch required
+
+v26.1.41 (2026-02-24)
+-------------------------
+ * Make OpenSearch config required and report spool size to Cloudwatch
+
+v26.1.40 (2026-02-24)
+-------------------------
+ * Tweak OpenSearch env names and runtime struct
+
+v26.1.39 (2026-02-23)
+-------------------------
+ * Add messages search endpoint
+
+v26.1.38 (2026-02-23)
+-------------------------
+ * Make messages index name configurable
+ * Update to latest gocommon
+
+v26.1.37 (2026-02-22)
+-------------------------
+ * Update to latest goflow
+
+v26.1.36 (2026-02-19)
+-------------------------
+ * Fix startup check for opensearch
+
+v26.1.35 (2026-02-19)
+-------------------------
+ * Create regular index for messages instead of template
+
+v26.1.34 (2026-02-18)
+-------------------------
+ * Start indexing messages associated with tickets to opensearch
+ * Update dependencies
+
+v26.1.33 (2026-02-18)
+-------------------------
+ * Update to latest goflow that adds ticket_uuid to msg_received events
+ * Add OpenSearch writer and spool to runtime
+
+v26.1.32 (2026-02-16)
+-------------------------
+ * OpenSearch config needs to be collection specific
+
+v26.1.31 (2026-02-16)
+-------------------------
+ * When campaign points are flow events, use smaller batches
+ * Add optional OpenSearch client (not yet used)
+
+v26.1.30 (2026-02-16)
+-------------------------
+ * Don't create wait timeout fires if they'd occur after the wait expiration
+ * Ensure that contacts are properly locked when for campaign events that use skip mode
+
+v26.1.29 (2026-02-12)
+-------------------------
+ * Tweaks to GetContactWaitingSession.. should log error if contact's current session no longer exists or is not waiting
+
+v26.1.28 (2026-02-11)
+-------------------------
+ * Get rid of ever using the read replica to load contacts for realtime tasks.
+ * Simplify insertDatabaseSessions
+
+v26.1.27 (2026-02-11)
+-------------------------
+ * Simplify GetWaitingSessionForContact
+ * Wait expiration and timeout events should noop if the contact's current session has already changed
+
+v26.1.26 (2026-02-10)
+-------------------------
+ * Completely remove old Msg.quick_replies field
+
+v26.1.25 (2026-02-10)
+-------------------------
+ * Fix handling of lock grabs that timeout
+ * Set a redis key to track progress of flow interruption
+
+v26.1.24 (2026-02-09)
+-------------------------
+ * Update phonenumbers
+ * Stop writing Msg.quick_replies to the DB
+
+v26.1.23 (2026-02-05)
+-------------------------
+ * Start reading from Msg.quickreplies when set
+
+v26.1.22 (2026-02-05)
+-------------------------
+ * Start writing Msg.quickreplies
+ * Update URN affinity via scene and modifier
+ * Update test database
+ * Update goflow which tweaks truncation of quick replies
+
 v26.1.21 (2026-02-04)
 -------------------------
  * Tweak updating of last seen to use value from event

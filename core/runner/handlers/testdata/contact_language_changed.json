@@ -71,6 +71,14 @@
                     "type": "contact_language_changed"
                 }
             }
+        ],
+        "assert_search": [
+            {
+                "query": "language = spa",
+                "contacts": [
+                    10000
+                ]
+            }
         ]
     }
 ]

@@ -7,11 +7,8 @@ import (
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/gomodule/redigo/redis"
+	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/aws/cwatch"
-	"github.com/nyaruka/gocommon/aws/dynamo"
 	"github.com/nyaruka/gocommon/aws/s3x"
 	"github.com/nyaruka/vkutil"
 	"github.com/vinovest/sqlx"
@@ -24,17 +21,15 @@ type Runtime struct {
 
 	DB         *sqlx.DB
 	ReadonlyDB *sql.DB
-	Dynamo     *dynamodb.Client
-	VK         *redis.Pool
+	VK         *valkey.Pool
 	S3         *s3x.Service
-	ES         *elasticsearch.TypedClient
-	CW         *cwatch.Service
+	ES     *Elastic
+	Dynamo *Dynamo
+	CW     *cwatch.Service
 	FCM        FCMClient
 
-	Writers *Writers
-	Spool   *dynamo.Spool
-	Queues  *Queues
-	Stats   *StatsCollector
+	Queues *Queues
+	Stats  *StatsCollector
 }
 
 // FCMClient is an interface to allow mocking in tests
@@ -63,9 +58,9 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 		rt.ReadonlyDB = rt.DB.DB
 	}
 
-	rt.Dynamo, err = dynamo.NewClient(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.DynamoEndpoint)
+	rt.Dynamo, err = newDynamo(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("error creating DynamoDB client: %w", err)
+		return nil, err
 	}
 
 	rt.VK, err = vkutil.NewPool(cfg.Valkey)
@@ -78,9 +73,9 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 		return nil, fmt.Errorf("error creating S3 service: %w", err)
 	}
 
-	rt.ES, err = elasticsearch.NewTypedClient(elasticsearch.Config{Addresses: []string{cfg.Elastic}, Username: cfg.ElasticUsername, Password: cfg.ElasticPassword})
+	rt.ES, err = newElastic(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("error creating Elasticsearch client: %w", err)
+		return nil, err
 	}
 
 	rt.CW, err = cwatch.NewService(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.CloudwatchNamespace, cfg.DeploymentID)
@@ -88,26 +83,25 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 		return nil, fmt.Errorf("error creating Cloudwatch service: %w", err)
 	}
 
-	rt.Spool = dynamo.NewSpool(rt.Dynamo, cfg.SpoolDir+"/dynamo", 30*time.Second)
-	rt.Writers = newWriters(cfg, rt.Dynamo, rt.Spool)
 	rt.Queues = newQueues(cfg)
-	rt.Stats = NewStatsCollector()
+	rt.Stats = NewStatsCollector(rt.VK)
 
 	return rt, nil
 }
 
 func (r *Runtime) Start() error {
-	if err := r.Spool.Start(); err != nil {
-		return fmt.Errorf("error starting dynamo spool: %w", err)
+	if err := r.Dynamo.start(); err != nil {
+		return err
 	}
-
-	r.Writers.start()
+	if err := r.ES.start(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (r *Runtime) Stop() {
-	r.Writers.stop()
-	r.Spool.Stop()
+	r.Dynamo.stop()
+	r.ES.stop()
 }
 
 func createPostgresPool(url string, maxOpenConns int) (*sqlx.DB, error) {

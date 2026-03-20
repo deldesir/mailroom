@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/dbutil"
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/mailroom/core/models"
@@ -68,11 +68,11 @@ func (t *ProcessContactQueue) Perform(ctx context.Context, rt *runtime.Runtime, 
 	for {
 		// pop the next event off this contacts queue
 		vc := rt.VK.Get()
-		event, err := redis.Bytes(vc.Do("LPOP", contactQ))
+		event, err := valkey.Bytes(vc.Do("LPOP", contactQ))
 		vc.Close()
 
 		// out of tasks? that's ok, exit
-		if err == redis.ErrNil {
+		if err == valkey.ErrNil {
 			return nil
 		}
 
@@ -96,7 +96,7 @@ func (t *ProcessContactQueue) Perform(ctx context.Context, rt *runtime.Runtime, 
 		err = ctasks.Perform(ctx, rt, oa, t.ContactID, ctask)
 
 		// record metrics
-		rt.Stats.RecordContactTask(taskPayload.Type, time.Since(start), time.Since(taskPayload.QueuedOn), err != nil)
+		rt.Stats.RecordContactTask(taskPayload.Type, int(oa.OrgID()), time.Since(start), time.Since(taskPayload.QueuedOn), err != nil)
 
 		// if we get an error processing an event, requeue it for later and return our error
 		if err != nil {
@@ -107,7 +107,8 @@ func (t *ProcessContactQueue) Perform(ctx context.Context, rt *runtime.Runtime, 
 
 			taskPayload.ErrorCount++
 			if taskPayload.ErrorCount < 3 {
-				retryErr := queueContact(ctx, rt, oa.OrgID(), t.ContactID, ctask, true, taskPayload.ErrorCount)
+				// use background context because ctx may have been cancelled by the task timeout
+			retryErr := queueContact(context.Background(), rt, oa.OrgID(), t.ContactID, ctask, true, taskPayload.ErrorCount)
 				if retryErr != nil {
 					log.Error("error requeuing errored contact event", "error", retryErr)
 				}

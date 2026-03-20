@@ -1,7 +1,17 @@
 version: 2
 builds:
-  - main: ./cmd/mailroom/main.go
+  - id: mailroom
+    main: ./cmd/mailroom/main.go
     binary: mailroom
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+  - id: mrindex
+    main: ./cmd/mrindex/main.go
+    binary: mrindex
     goos:
       - darwin
       - linux

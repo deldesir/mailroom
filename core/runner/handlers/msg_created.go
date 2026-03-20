@@ -10,6 +10,7 @@ import (
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/runner"
 	"github.com/nyaruka/mailroom/core/runner/hooks"
+	"github.com/nyaruka/mailroom/core/search"
 	"github.com/nyaruka/mailroom/runtime"
 )
 
@@ -57,6 +58,18 @@ func handleMsgCreated(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAs
 	}
 
 	scene.OutgoingMsgs = append(scene.OutgoingMsgs, msg)
+
+	// index message to Elasticsearch if it's not from a broadcast, flow, or IVR
+	if event.BroadcastUUID == "" && userID != models.NilUserID && scene.Call == nil && len(event.Msg.Text()) >= search.MessageTextMinLength {
+		scene.AttachPostCommitHook(hooks.IndexMessages, &search.MessageDoc{
+			CreatedOn:   event.CreatedOn(),
+			OrgID:       oa.OrgID(),
+			UUID:        event.UUID(),
+			ContactUUID: scene.ContactUUID(),
+			Text:        event.Msg.Text(),
+			InTicket:    event.TicketUUID != "",
+		})
+	}
 
 	return nil
 }

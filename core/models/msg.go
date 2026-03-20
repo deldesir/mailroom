@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	valkey "github.com/gomodule/redigo/redis"
 	"github.com/lib/pq"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/gsm7"
@@ -160,12 +160,12 @@ type Msg struct {
 		CreatedByID UserID      `db:"created_by_id"`
 
 		// content
-		Text         string         `db:"text"`
-		Attachments  pq.StringArray `db:"attachments"`
-		QuickReplies pq.StringArray `db:"quick_replies"`
-		OptInID      OptInID        `db:"optin_id"`
-		Locale       i18n.Locale    `db:"locale"`
-		Templating   *Templating    `db:"templating"`
+		Text         string                    `db:"text"`
+		Attachments  pq.StringArray            `db:"attachments"`
+		QuickReplies JSONB[[]flows.QuickReply] `db:"quickreplies"`
+		OptInID      OptInID                   `db:"optin_id"`
+		Locale       i18n.Locale               `db:"locale"`
+		Templating   *Templating               `db:"templating"`
 
 		HighPriority       bool          `db:"high_priority"`
 		Direction          Direction     `db:"direction"`
@@ -239,13 +239,10 @@ func (m *Msg) Attachments() []utils.Attachment {
 }
 
 func (m *Msg) QuickReplies() []flows.QuickReply {
-	qrs := make([]flows.QuickReply, len(m.m.QuickReplies))
-	for i, mqr := range m.m.QuickReplies {
-		qr := flows.QuickReply{}
-		qr.UnmarshalText([]byte(mqr))
-		qrs[i] = qr
+	if m.m.QuickReplies.V != nil {
+		return m.m.QuickReplies.V
 	}
-	return qrs
+	return []flows.QuickReply{}
 }
 
 // MsgOut is an outgoing message with the additional information required to queue it
@@ -405,6 +402,7 @@ func newMsgOut(rt *runtime.Runtime, org *Org, channel *Channel, contact *Contact
 	m.TicketUUID = null.String(event.TicketUUID)
 	m.Text = out.Text()
 	m.Locale = out.Locale()
+	m.QuickReplies = JSONB[[]flows.QuickReply]{out.QuickReplies()}
 	m.OptInID = optInID
 	m.HighPriority = highPriority
 	m.Direction = DirectionOut
@@ -431,12 +429,6 @@ func newMsgOut(rt *runtime.Runtime, org *Org, channel *Channel, contact *Contact
 			m.Attachments = append(m.Attachments, string(NormalizeAttachment(rt.Config, a)))
 		}
 	}
-	if len(out.QuickReplies()) > 0 {
-		for _, qr := range out.QuickReplies() {
-			mqr, _ := qr.MarshalText()
-			m.QuickReplies = append(m.QuickReplies, string(mqr))
-		}
-	}
 
 	if out.UnsendableReason() != "" {
 		m.Status = MsgStatusFailed
@@ -455,7 +447,7 @@ func newMsgOut(rt *runtime.Runtime, org *Org, channel *Channel, contact *Contact
 	return &MsgOut{Msg: msg, URN: urn, Contact: contact, ReplyTo: replyTo}, nil
 }
 
-var msgRepetitionsScript = redis.NewScript(3, `
+var msgRepetitionsScript = valkey.NewScript(3, `
 local key, contact_id, text = KEYS[1], KEYS[2], KEYS[3]
 
 local msg_key = string.format("%d|%s", contact_id, string.lower(string.sub(text, 1, 128)))
@@ -475,13 +467,13 @@ return count
 `)
 
 // GetMsgRepetitions gets the number of repetitions of this msg text for the given contact in the current 5 minute window
-func GetMsgRepetitions(rp *redis.Pool, contactID ContactID, msg *flows.MsgContent) (int, error) {
+func GetMsgRepetitions(rp *valkey.Pool, contactID ContactID, msg *flows.MsgContent) (int, error) {
 	vc := rp.Get()
 	defer vc.Close()
 
 	keyTime := dates.Now().UTC().Round(time.Minute * 5)
 	key := fmt.Sprintf("msg_repetitions:%s", keyTime.Format("2006-01-02T15:04"))
-	return redis.Int(msgRepetitionsScript.Do(vc, key, contactID, msg.Text))
+	return valkey.Int(msgRepetitionsScript.Do(vc, key, contactID, msg.Text))
 }
 
 var sqlSelectMessagesByUUID = `
@@ -494,7 +486,7 @@ SELECT
 	optin_id,
 	text,
 	attachments,
-	quick_replies,
+	quickreplies,
 	locale,
 	templating,
 	created_on,
@@ -535,7 +527,7 @@ SELECT
 	m.optin_id,
 	m.text,
 	m.attachments,
-	m.quick_replies,
+	m.quickreplies,
 	m.locale,
 	m.templating,
 	m.created_on,
@@ -620,10 +612,10 @@ func InsertMessages(ctx context.Context, tx DBorTx, msgs []*Msg) error {
 
 const sqlInsertMsgSQL = `
 INSERT INTO
-msgs_msg(uuid, text, attachments, quick_replies, locale, templating, high_priority, created_on, modified_on, sent_on, direction, status,
+msgs_msg(uuid, text, attachments, quickreplies, locale, templating, high_priority, created_on, modified_on, sent_on, direction, status,
 		 visibility, msg_type, msg_count, error_count, next_attempt, failed_reason, channel_id, is_android,
 		 contact_id, contact_urn_id, org_id, flow_id, broadcast_id, ticket_uuid, optin_id, created_by_id)
-  VALUES(:uuid, :text, :attachments, :quick_replies, :locale, :templating, :high_priority, :created_on, now(), :sent_on, :direction, :status,
+  VALUES(:uuid, :text, :attachments, :quickreplies, :locale, :templating, :high_priority, :created_on, now(), :sent_on, :direction, :status,
 		 :visibility, :msg_type, :msg_count, :error_count, :next_attempt, :failed_reason, :channel_id, :is_android,
 		 :contact_id, :contact_urn_id, :org_id, :flow_id, :broadcast_id, :ticket_uuid, :optin_id, :created_by_id)
 RETURNING id, modified_on`

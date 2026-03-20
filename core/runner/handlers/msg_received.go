@@ -9,6 +9,7 @@ import (
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/runner"
 	"github.com/nyaruka/mailroom/core/runner/hooks"
+	"github.com/nyaruka/mailroom/core/search"
 	"github.com/nyaruka/mailroom/runtime"
 )
 
@@ -25,6 +26,18 @@ func handleMsgReceived(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 	// update the message to be handled
 	if scene.IncomingMsg != nil && !scene.IncomingMsg.Handled {
 		scene.AttachPreCommitHook(hooks.UpdateMessageHandled, event)
+	}
+
+	// index message to Elasticsearch if it's not IVR and has sufficient text
+	if scene.Call == nil && len(event.Msg.Text()) >= search.MessageTextMinLength {
+		scene.AttachPostCommitHook(hooks.IndexMessages, &search.MessageDoc{
+			CreatedOn:   event.CreatedOn(),
+			OrgID:       oa.OrgID(),
+			UUID:        event.UUID(),
+			ContactUUID: scene.ContactUUID(),
+			Text:        event.Msg.Text(),
+			InTicket:    event.TicketUUID != "",
+		})
 	}
 
 	return nil

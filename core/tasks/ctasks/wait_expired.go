@@ -29,29 +29,31 @@ func (t *WaitExpired) Type() string {
 	return TypeWaitExpired
 }
 
-func (t *WaitExpired) UseReadOnly() bool {
-	return true
-}
-
 func (t *WaitExpired) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, mc *models.Contact) error {
 	log := slog.With("ctask", "wait_expired", "contact_id", mc.ID(), "session_uuid", t.SessionUUID)
+
+	// if contact's current session has already changed, noop
+	if mc.CurrentSessionUUID() != t.SessionUUID {
+		log.Debug("skipping as contact's current session has changed")
+		return nil
+	}
+
+	// look for a waiting session for this contact
+	session, err := models.GetContactWaitingSession(ctx, rt, oa, mc)
+	if err != nil {
+		return fmt.Errorf("error loading waiting session for contact %s: %w", mc.UUID(), err)
+	}
+
+	// if we didn't find a session or if it's been modified since, ignore this task
+	if session == nil || session.LastSprintUUID != t.SprintUUID {
+		log.Debug("skipping as waiting session has changed")
+		return nil
+	}
 
 	// build our flow contact
 	contact, err := mc.EngineContact(oa)
 	if err != nil {
 		return fmt.Errorf("error creating flow contact: %w", err)
-	}
-
-	// look for a waiting session for this contact
-	session, err := models.GetWaitingSessionForContact(ctx, rt, oa, contact, t.SessionUUID)
-	if err != nil {
-		return fmt.Errorf("error loading waiting session for contact #%d: %w", mc.ID(), err)
-	}
-
-	// if we didn't find a session or it is another session or if it's been modified since, ignore this task
-	if session == nil || session.UUID != t.SessionUUID || session.LastSprintUUID != t.SprintUUID {
-		log.Debug("skipping as waiting session has changed")
-		return nil
 	}
 
 	evt := events.NewWaitExpired()
@@ -70,7 +72,7 @@ func (t *WaitExpired) Perform(ctx context.Context, rt *runtime.Runtime, oa *mode
 		}
 
 		if clog != nil {
-			if _, err := rt.Writers.Main.Queue(clog); err != nil {
+			if _, err := rt.Dynamo.Main.Queue(clog); err != nil {
 				return fmt.Errorf("error queuing IVR channel log to writer: %w", err)
 			}
 		}

@@ -1,10 +1,10 @@
 package testsuite
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
-	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -22,10 +22,12 @@ import (
 )
 
 const (
-	elasticURL           = "http://elastic:9200"
-	elasticContactsIndex = "test_contacts"
-	postgresDumpPath     = "./testsuite/testdata/postgres.dump"
-	dynamoTablesPath     = "./testsuite/testdata/dynamo.json"
+	elasticURL               = "http://elastic:9200"
+	elasticContactsIndex     = "test_contacts"
+	elasticContactsIndexV2   = "test_contacts-v2"
+	elasticMessagesIndex     = "messages-test"
+	postgresDumpPath         = "./testsuite/testdata/postgres.dump"
+	dynamoTablesPath         = "./testsuite/testdata/dynamo.json"
 )
 
 // Refresh is our type for the pieces of org assets we want fresh (not cached)
@@ -39,8 +41,8 @@ const (
 	ResetData    = ResetFlag(1 << 2)
 	ResetValkey  = ResetFlag(1 << 3)
 	ResetStorage = ResetFlag(1 << 4)
-	ResetElastic = ResetFlag(1 << 5)
-	ResetDynamo  = ResetFlag(1 << 6)
+	ResetDynamo  = ResetFlag(1 << 5)
+	ResetElastic = ResetFlag(1 << 6)
 )
 
 // Reset clears out both our database and redis DB
@@ -74,6 +76,8 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	cfg.Port = 8091
 	cfg.DB = "postgres://mailroom_test:temba@postgres/mailroom_test?sslmode=disable&Timezone=UTC"
 	cfg.ElasticContactsIndex = elasticContactsIndex
+	cfg.ElasticContactsIndexV2 = elasticContactsIndexV2
+	cfg.ElasticMessagesIndex = elasticMessagesIndex
 	cfg.Elastic = elasticURL
 	cfg.AWSAccessKeyID = "root"
 	cfg.AWSSecretAccessKey = "tembatemba"
@@ -91,6 +95,11 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	require.NoError(t, err)
 
 	createBucket(t, rt, rt.Config.S3AttachmentsBucket)
+	setupElasticContactsV2(t, rt)
+	setupElasticMessages(t, rt)
+
+	// clear stale message indexes from previous test runs (they share deterministic mock UUIDs)
+	deleteElasticMessages(t, rt)
 
 	// create Postgres tables if necessary
 	_, err = rt.DB.Exec("SELECT * from orgs_org")
@@ -103,7 +112,7 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	}
 
 	// create Dynamo tables if necessary
-	dyntest.CreateTables(t, rt.Dynamo, absPath(dynamoTablesPath), false)
+	dyntest.CreateTables(t, rt.Dynamo.Main.Client(), absPath(dynamoTablesPath), false)
 
 	rt.FCM = &MockFCMClient{ValidTokens: []string{"FCMID3", "FCMID4", "FCMID5"}}
 
@@ -134,7 +143,7 @@ func ReindexElastic(t *testing.T, rt *runtime.Runtime) {
 	_, err := contactsIndexer.Index(&ixruntime.Runtime{DB: rt.DB.DB}, false, false)
 	require.NoError(t, err)
 
-	_, err = rt.ES.Indices.Refresh().Index(elasticContactsIndex).Do(t.Context())
+	_, err = rt.ES.Client.Indices.Refresh().Index(elasticContactsIndex).Do(t.Context())
 	require.NoError(t, err)
 }
 
@@ -219,31 +228,82 @@ func createBucket(t *testing.T, rt *runtime.Runtime, bucket string) {
 func resetElastic(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
-	exists, err := rt.ES.Indices.ExistsAlias(elasticContactsIndex).Do(t.Context())
+	exists, err := rt.ES.Client.Indices.ExistsAlias(elasticContactsIndex).Do(t.Context())
 	require.NoError(t, err)
 
 	if exists {
 		// get any indexes for the contacts alias
-		ar, err := rt.ES.Indices.GetAlias().Name(elasticContactsIndex).Do(t.Context())
+		ar, err := rt.ES.Client.Indices.GetAlias().Name(elasticContactsIndex).Do(t.Context())
 		require.NoError(t, err)
 
 		// and delete them
-		for index := range maps.Keys(ar) {
-			_, err := rt.ES.Indices.Delete(index).Do(t.Context())
+		for index := range ar {
+			_, err := rt.ES.Client.Indices.Delete(index).Do(t.Context())
 			require.NoError(t, err)
 		}
 	}
 
+	// delete and recreate the v2 contacts index
+	rt.ES.Client.Indices.Delete(elasticContactsIndexV2).Do(t.Context())
+	setupElasticContactsV2(t, rt)
+
+	// delete any message indexes
+	deleteElasticMessages(t, rt)
+
 	ReindexElastic(t, rt)
+}
+
+// setupElasticContactsV2 creates the v2 contacts index in Elastic if it doesn't already exist
+func setupElasticContactsV2(t *testing.T, rt *runtime.Runtime) {
+	t.Helper()
+
+	exists, err := rt.ES.Client.Indices.Exists(elasticContactsIndexV2).IsSuccess(t.Context())
+	require.NoError(t, err)
+
+	if !exists {
+		contactsBody := ReadFile(t, absPath("./testsuite/testdata/es_contacts.json"))
+		_, err = rt.ES.Client.Indices.Create(elasticContactsIndexV2).Raw(bytes.NewReader(contactsBody)).Do(t.Context())
+		require.NoError(t, err)
+	}
+}
+
+// setupElasticMessages creates the index template for messages in Elastic
+func setupElasticMessages(t *testing.T, rt *runtime.Runtime) {
+	t.Helper()
+
+	messagesBody := ReadFile(t, absPath("./testsuite/testdata/es_messages.json"))
+
+	// replace placeholder with actual index name for test
+	body := bytes.ReplaceAll(messagesBody, []byte("{{INDEX}}"), []byte(rt.Config.ElasticMessagesIndex))
+
+	_, err := rt.ES.Client.Indices.PutIndexTemplate(rt.Config.ElasticMessagesIndex).Raw(bytes.NewReader(body)).Do(t.Context())
+	require.NoError(t, err)
+}
+
+// deleteElasticMessages deletes all message indexes matching the configured pattern
+func deleteElasticMessages(t *testing.T, rt *runtime.Runtime) {
+	t.Helper()
+
+	pattern := rt.Config.ElasticMessagesIndex + "-*"
+
+	indexes, err := rt.ES.Client.Cat.Indices().Index(pattern).Do(t.Context())
+	require.NoError(t, err)
+
+	for _, idx := range indexes {
+		if idx.Index != nil {
+			_, err := rt.ES.Client.Indices.Delete(*idx.Index).Do(t.Context())
+			require.NoError(t, err)
+		}
+	}
 }
 
 func resetDynamo(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
-	rt.Writers.Main.Flush()
-	rt.Writers.History.Flush()
+	rt.Dynamo.Main.Flush()
+	rt.Dynamo.History.Flush()
 
-	dyntest.CreateTables(t, rt.Dynamo, absPath(dynamoTablesPath), true)
+	dyntest.CreateTables(t, rt.Dynamo.Main.Client(), absPath(dynamoTablesPath), true)
 }
 
 var sqlResetTestData = `

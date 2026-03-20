@@ -67,37 +67,39 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 	sessionIsWaiting := scene.Session.Status() == flows.SessionStatusWaiting
 	currentFlowChanged := false
 
-	// get flow that contact is now waiting in ()
-	currentFlowID := models.NilFlowID
+	// get flow that contact is now waiting in
+	waitingFlowID := models.NilFlowID
 	for _, run := range scene.Session.Runs() {
 		if run.Status() == flows.RunStatusWaiting {
-			currentFlowID = run.Flow().Asset().(*models.Flow).ID()
+			waitingFlowID = run.Flow().Asset().(*models.Flow).ID()
 			break
 		}
 	}
 
-	// if we're in a flow type that can wait then contact current flow has potentially changed
+	// if we're in a flow type that can wait, then contact current flow has potentially changed
 	if scene.Session.Type() != flows.FlowTypeMessagingBackground {
 		var waitingSessionUUID flows.SessionUUID
 		if sessionIsWaiting {
 			waitingSessionUUID = scene.Session.UUID()
 		}
 
-		currentFlowChanged = event.Contact.CurrentFlowID() != currentFlowID
+		currentFlowChanged = event.Contact.CurrentFlowID() != waitingFlowID
+		scene.DBContact.SetCurrentFlowID(waitingFlowID)
 
 		if event.Contact.CurrentSessionUUID() != waitingSessionUUID || currentFlowChanged {
 			scene.AttachPreCommitHook(hooks.UpdateContactSession, hooks.CurrentSessionUpdate{
 				ID:                 scene.ContactID(),
 				CurrentSessionUUID: null.String(waitingSessionUUID),
-				CurrentFlowID:      currentFlowID,
+				CurrentFlowID:      waitingFlowID,
 			})
 		}
 	}
 
-	// if current flow has changed then we need to update modified_on, but also if this is a new session
+	// if current flow has changed then we need to re-index, but also if this is a new session
 	// then flow history may have changed too in a way that won't be captured by a flow_entered event
 	if currentFlowChanged || !event.Resumed {
 		scene.AttachPreCommitHook(hooks.UpdateContactModifiedOn, event)
+		scene.AttachPostCommitHook(hooks.IndexContacts, event)
 	}
 
 	if scene.DBCall != nil {
@@ -137,18 +139,25 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 	return nil
 }
 
-// calculates the fires needed for the given session - returns timeout separately if this session will queue messages to courier
+// Calculates the fires needed for the given session - returns timeout separately if this session will queue messages to
+// courier so that the message can be queued with that timeout delta and courier knows that it should create the actual
+// wait timeout contact fire.
 func calculateFires(oa *models.OrgAssets, contactID models.ContactID, session flows.Session, sprint flows.Sprint, initial bool) ([]*models.ContactFire, time.Duration) {
 	waitExpiresOn, waitTimeout, queuesToCourier := getWaitProperties(oa, sprint.Events())
 	var waitTimeoutOn *time.Time
 	var timeout time.Duration
 
 	if waitTimeout != 0 {
-		if queuesToCourier {
-			timeout = waitTimeout
-		} else {
-			ton := dates.Now().Add(waitTimeout)
-			waitTimeoutOn = &ton
+		ton := dates.Now().Add(waitTimeout)
+
+		// if wait timeout would be after wait expiration, don't bother creating a timeout fire or
+		// returning a timeout to courier since it would never be used
+		if waitExpiresOn == nil || ton.Before(*waitExpiresOn) {
+			if queuesToCourier {
+				timeout = waitTimeout
+			} else {
+				waitTimeoutOn = &ton
+			}
 		}
 	}
 

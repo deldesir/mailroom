@@ -8,9 +8,11 @@ import (
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/envs"
+	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/runner/clocks"
 	_ "github.com/nyaruka/mailroom/core/runner/handlers"
+	"github.com/nyaruka/mailroom/core/search"
 	"github.com/nyaruka/mailroom/testsuite"
 	"github.com/nyaruka/mailroom/testsuite/testdb"
 	"github.com/nyaruka/mailroom/web/contact"
@@ -30,11 +32,49 @@ func TestCreate(t *testing.T) {
 }
 
 func TestDeindex(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	defer testsuite.Reset(t, rt, testsuite.ResetElastic)
+
+	// index Bob and Cat into the v2 contacts index
+	oa := testdb.Org1.Load(t, rt)
+	mcs, err := models.LoadContacts(ctx, rt.DB, oa, []models.ContactID{testdb.Bob.ID, testdb.Cat.ID})
+	require.NoError(t, err)
+	fcs := make([]*flows.Contact, len(mcs))
+	for i, mc := range mcs {
+		fcs[i], err = mc.EngineContact(oa)
+		require.NoError(t, err)
+	}
+	err = search.IndexContacts(ctx, rt, oa, fcs, map[models.ContactID]models.FlowID{})
+	require.NoError(t, err)
+	rt.ES.Writer.Flush()
+	_, err = rt.ES.Client.Indices.Refresh().Index(rt.Config.ElasticContactsIndexV2).Do(ctx)
+	require.NoError(t, err)
+
+	// index some test messages into Elasticsearch for Bob (10001) and Cat (10002)
+	testsuite.IndexMessages(t, rt, []search.MessageDoc{
+		{CreatedOn: time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC), OrgID: testdb.Org1.ID, UUID: "01968bb7-ca00-7000-8000-000000000001", ContactUUID: testdb.Bob.UUID, Text: "hello from bob"},
+		{CreatedOn: time.Date(2025, 5, 1, 13, 0, 0, 0, time.UTC), OrgID: testdb.Org1.ID, UUID: "01968bee-b880-7000-8000-000000000002", ContactUUID: testdb.Cat.UUID, Text: "hello from cat"},
+		{CreatedOn: time.Date(2025, 5, 1, 14, 0, 0, 0, time.UTC), OrgID: testdb.Org1.ID, UUID: "01968c25-a700-7000-8000-000000000003", ContactUUID: testdb.Ann.UUID, Text: "hello from ann"},
+	})
+
+	msgs := testsuite.GetIndexedMessages(t, rt, false)
+	assert.Len(t, msgs, 3)
+
+	testsuite.RunWebTests(t, rt, "testdata/deindex.json")
+
+	// Bob and Cat's messages should have been removed, Ann's should remain
+	msgs = testsuite.GetIndexedMessages(t, rt, false)
+	assert.Len(t, msgs, 1)
+	assert.Equal(t, string(testdb.Ann.UUID), msgs[0].ContactUUID)
+}
+
+func TestReindex(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
 	defer testsuite.Reset(t, rt, testsuite.ResetElastic)
 
-	testsuite.RunWebTests(t, rt, "testdata/deindex.json")
+	testsuite.RunWebTests(t, rt, "testdata/reindex.json")
 }
 
 func TestExport(t *testing.T) {

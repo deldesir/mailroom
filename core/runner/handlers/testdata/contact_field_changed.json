@@ -328,6 +328,26 @@
                     }
                 }
             }
+        ],
+        "assert_search": [
+            {
+                "query": "gender = Female",
+                "contacts": [
+                    10000
+                ]
+            },
+            {
+                "query": "gender = Male",
+                "contacts": [
+                    10001
+                ]
+            },
+            {
+                "query": "age = 40",
+                "contacts": [
+                    10002
+                ]
+            }
         ]
     }
 ]

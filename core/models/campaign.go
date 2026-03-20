@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil"
 	"github.com/nyaruka/goflow/assets"
@@ -19,8 +20,9 @@ type CampaignID int
 type PointID int
 type PointType string
 type PointStatus string
-type PointMode string
 type PointUnit string
+
+type StartMode string
 
 const (
 	// CreatedOnKey is key of created on system field
@@ -38,14 +40,14 @@ const (
 	PointStatusScheduling = PointStatus("S")
 	PointStatusReady      = PointStatus("R")
 
-	PointModeInterrupt = PointMode("I") // should interrupt other flows
-	PointModeSkip      = PointMode("S") // should be skipped if the user is in another flow
-	PointModePassive   = PointMode("P") // flow is a background flow and should run that way
-
 	PointUnitMinutes = PointUnit("M")
 	PointUnitHours   = PointUnit("H")
 	PointUnitDays    = PointUnit("D")
 	PointUnitWeeks   = PointUnit("W")
+
+	StartModeInterrupt  = StartMode("I") // should interrupt other flows
+	StartModeSkip       = StartMode("S") // should be skipped if the user is in another flow
+	StartModeBackground = StartMode("P") // flow is a background flow and should run that way
 )
 
 // Campaign is our struct for a campaign and all its point events
@@ -72,7 +74,7 @@ type CampaignPoint struct {
 	Type        PointType                `json:"event_type"`
 	Status      PointStatus              `json:"status"`
 	FireVersion int                      `json:"fire_version"`
-	StartMode   PointMode                `json:"start_mode"`
+	StartMode   StartMode                `json:"start_mode"`
 
 	RelativeToID  FieldID   `json:"relative_to_id"`
 	RelativeToKey string    `json:"relative_to_key"`
@@ -239,72 +241,6 @@ SELECT ROW_TO_JSON(r) FROM (SELECT
 WHERE c.org_id = $1 AND c.is_active = TRUE AND c.is_archived = FALSE
 ) r;`
 
-// DeleteCampaignFiresForGroupRemoval deletes any unfired events for all campaigns that are
-// based on the passed in group id for all the passed in contacts.
-func DeleteCampaignFiresForGroupRemoval(ctx context.Context, tx DBorTx, oa *OrgAssets, contactIDs []ContactID, groupID GroupID) error {
-	fds := make([]*FireDelete, 0, 10)
-
-	for _, c := range oa.CampaignByGroupID(groupID) {
-		for _, e := range c.Points() {
-			for _, cid := range contactIDs {
-				fds = append(fds, &FireDelete{
-					ContactID:   cid,
-					EventID:     e.ID,
-					FireVersion: e.FireVersion,
-				})
-			}
-		}
-	}
-
-	return DeleteCampaignFires(ctx, tx, fds)
-}
-
-// AddCampaignFiresForGroupAddition first removes the passed in contacts from any points that group change may effect,
-// then recreates the fires for campaign points they qualify for.
-func AddCampaignFiresForGroupAddition(ctx context.Context, tx DBorTx, oa *OrgAssets, contacts []*flows.Contact, groupID GroupID) error {
-	cids := make([]ContactID, len(contacts))
-	for i, c := range contacts {
-		cids[i] = ContactID(c.ID())
-	}
-
-	// first remove all existing fires that may be affected by our group change
-	err := DeleteCampaignFiresForGroupRemoval(ctx, tx, oa, cids, groupID)
-	if err != nil {
-		return fmt.Errorf("error removing campaign fires for contacts: %w", err)
-	}
-
-	// now calculate which fires need to be added
-	fas := make([]*ContactFire, 0, 10)
-
-	tz := oa.Env().Timezone()
-
-	// for each of our contacts
-	for _, contact := range contacts {
-		// for each campaign that may have changed from this group change
-		for _, c := range oa.CampaignByGroupID(groupID) {
-			// check each event
-			for _, p := range c.Points() {
-				// and if we qualify by field
-				if p.QualifiesByField(contact) {
-					// calculate our scheduled fire
-					scheduled, err := p.ScheduleForContact(tz, dates.Now(), contact)
-					if err != nil {
-						return fmt.Errorf("error calculating schedule for event #%d and contact #%d: %w", p.ID, contact.ID(), err)
-					}
-
-					// if we have one, add it to our list for our batch commit
-					if scheduled != nil {
-						fas = append(fas, NewContactFireForCampaign(oa.OrgID(), ContactID(contact.ID()), p, *scheduled))
-					}
-				}
-			}
-		}
-	}
-
-	// add all our new event fires
-	return InsertContactFires(ctx, tx, fas)
-}
-
 // ScheduleCampaignPoint calculates event fires for new or updated campaign points
 func ScheduleCampaignPoint(ctx context.Context, rt *runtime.Runtime, oa *OrgAssets, pointID PointID) error {
 	p := oa.CampaignPointByID(pointID)
@@ -406,4 +342,24 @@ func campaignPointEligibleContacts(ctx context.Context, db *sqlx.DB, groupID Gro
 	}
 
 	return contacts, nil
+}
+
+// GetCampaignPointTypes returns a map of point ID to point type for the given IDs
+func GetCampaignPointTypes(ctx context.Context, db Queryer, ids []PointID) (map[PointID]PointType, error) {
+	result := make(map[PointID]PointType, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT id, event_type FROM campaigns_campaignevent WHERE id = ANY($1)`, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("error querying point types: %w", err)
+	}
+	defer rows.Close()
+
+	if err := dbutil.ScanAllMap(rows, result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }

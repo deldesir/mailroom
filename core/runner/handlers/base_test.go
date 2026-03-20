@@ -20,6 +20,7 @@ import (
 	"github.com/nyaruka/goflow/test"
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/core/runner"
+	"github.com/nyaruka/mailroom/core/search"
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/mailroom/testsuite"
 	"github.com/nyaruka/mailroom/testsuite/testdb"
@@ -76,15 +77,16 @@ func (m *ContactActionMap) UnmarshalJSON(d []byte) error {
 }
 
 type TestCase struct {
-	Label           string                             `json:"label"`
-	Msgs            map[flows.ContactUUID]*flows.MsgIn `json:"msgs,omitempty"`
-	BroadcastID     models.BroadcastID                 `json:"broadcast_id,omitempty"`
-	Events          ContactEventMap                    `json:"events"`
-	Actions         ContactActionMap                   `json:"actions,omitempty"`
-	UserID          models.UserID                      `json:"user_id,omitempty"`
-	DBAssertions    []*assertdb.Assert                 `json:"db_assertions,omitempty"`
-	ExpectedTasks   map[string][]testsuite.TaskInfo    `json:"expected_tasks,omitempty"`
-	ExpectedHistory []*dynamo.Item                     `json:"expected_history,omitempty"`
+	Label           string                          `json:"label"`
+	BroadcastID     models.BroadcastID              `json:"broadcast_id,omitempty"`
+	Events          ContactEventMap                 `json:"events"`
+	Actions         ContactActionMap                `json:"actions,omitempty"`
+	UserID          models.UserID                   `json:"user_id,omitempty"`
+	DBAssertions    []*assertdb.Assert              `json:"db_assertions,omitempty"`
+	ExpectedTasks   map[string][]testsuite.TaskInfo `json:"expected_tasks,omitempty"`
+	ExpectedHistory []*dynamo.Item                  `json:"expected_history,omitempty"`
+	IndexedMessages []testsuite.IndexedMessage       `json:"indexed_messages,omitempty"`
+	AssertSearch    []testsuite.SearchAssertion      `json:"assert_search,omitempty"`
 }
 
 func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
@@ -101,6 +103,10 @@ func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 
 	test.MockUniverse()
 
+	// clear any stale data from previous test runs
+	testsuite.GetIndexedMessages(t, rt, true)
+	testsuite.ClearESContactsIndexV2(t, rt)
+
 	for i, tc := range tcs {
 		scenes := make([]*runner.Scene, 4)
 		msgEvents := make([]*events.MsgReceived, 4)
@@ -108,17 +114,6 @@ func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 		for i, c := range []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat, testdb.Dan} {
 			mc, contact, _ := c.Load(t, rt, oa)
 			scenes[i] = runner.NewScene(mc, contact)
-
-			if msg := tc.Msgs[c.UUID]; msg != nil {
-				msgEvent := events.NewMsgReceived(msg)
-				scenes[i].IncomingMsg = insertTestMessage(t, rt, oa, c, msg)
-				err := scenes[i].AddEvent(ctx, rt, oa, msgEvent, models.NilUserID, "")
-				require.NoError(t, err)
-
-				contact.SetLastSeenOn(msgEvent.CreatedOn())
-
-				msgEvents[i] = msgEvent
-			}
 
 			if tc.BroadcastID != models.NilBroadcastID {
 				bcast, err := models.GetBroadcastByID(ctx, rt.DB, tc.BroadcastID)
@@ -128,6 +123,12 @@ func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 			}
 
 			for _, e := range tc.Events[c.UUID] {
+				if me, ok := e.(*events.MsgReceived); ok {
+					scenes[i].IncomingMsg = insertTestMessage(t, rt, oa, c, me.Msg)
+					contact.SetLastSeenOn(me.CreatedOn())
+					msgEvents[i] = me
+				}
+
 				err := scenes[i].AddEvent(ctx, rt, oa, e, tc.UserID, "")
 				require.NoError(t, err)
 			}
@@ -171,7 +172,8 @@ func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 		// clone test case and populate with actual values
 		actual := tc
 		actual.ExpectedTasks = testsuite.GetQueuedTasks(t, rt)
-		actual.ExpectedHistory = testsuite.GetHistoryItems(t, rt, true)
+		actual.ExpectedHistory = testsuite.GetHistoryItems(t, rt, true, test.MockStartTime)
+		actual.IndexedMessages = testsuite.GetIndexedMessages(t, rt, true)
 
 		actual.DBAssertions = make([]*assertdb.Assert, len(tc.DBAssertions))
 		for i, dba := range tc.DBAssertions {
@@ -195,6 +197,42 @@ func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 				tc.ExpectedHistory = []*dynamo.Item{}
 			}
 			test.AssertEqualJSON(t, jsonx.MustMarshal(tc.ExpectedHistory), jsonx.MustMarshal(actual.ExpectedHistory), "%s: event history mismatch", tc.Label)
+
+			if tc.IndexedMessages == nil {
+				tc.IndexedMessages = []testsuite.IndexedMessage{}
+			}
+			if actual.IndexedMessages == nil {
+				actual.IndexedMessages = []testsuite.IndexedMessage{}
+			}
+			test.AssertEqualJSON(t, jsonx.MustMarshal(tc.IndexedMessages), jsonx.MustMarshal(actual.IndexedMessages), "%s: indexed messages mismatch", tc.Label)
+
+			// check search assertions against v2 Elastic contacts index
+			if len(tc.AssertSearch) > 0 {
+				// reload contacts from DB and re-index since handler tests add events directly
+				// (bypassing the flow engine) so the flow contacts used by IndexContacts hook
+				// don't have the updated values
+				models.FlushCache()
+				oa2, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+				require.NoError(t, err)
+
+				for _, c := range []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat, testdb.Dan} {
+					_, reloaded, _ := c.Load(t, rt, oa2)
+					err = search.IndexContacts(ctx, rt, oa2, []*flows.Contact{reloaded}, nil)
+					require.NoError(t, err)
+				}
+
+				rt.ES.Writer.Flush()
+				_, err = rt.ES.Client.Indices.Refresh().Index(rt.Config.ElasticContactsIndexV2).Do(ctx)
+				require.NoError(t, err)
+
+				for _, sa := range tc.AssertSearch {
+					ids, err := search.GetContactIDsForQueryV2(ctx, rt, oa2, nil, models.ContactStatusActive, sa.Query, -1)
+					assert.NoError(t, err, "%s: search query '%s' failed", tc.Label, sa.Query)
+					assert.ElementsMatch(t, sa.Contacts, ids, "%s: search query '%s' returned wrong contacts", tc.Label, sa.Query)
+				}
+
+				testsuite.ClearESContactsIndexV2(t, rt)
+			}
 		} else {
 			tcs[i] = actual
 		}

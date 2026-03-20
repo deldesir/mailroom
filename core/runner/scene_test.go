@@ -69,17 +69,17 @@ func TestSessionCreationAndUpdating(t *testing.T) {
 		})
 
 	// check events were persisted to DynamoDB
-	rt.Writers.History.Flush()
-	dyntest.AssertCount(t, rt.Dynamo, "TestHistory", 6)
+	rt.Dynamo.History.Flush()
+	dyntest.AssertCount(t, rt.Dynamo.History.Client(), "TestHistory", 6)
 
 	testsuite.AssertContactFires(t, rt, testdb.Bob.ID, map[string]time.Time{
 		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 10, 0, time.UTC), // 10 minutes in future
 		fmt.Sprintf("S:%s", scBob.Session.UUID()): time.Date(2025, 3, 28, 9, 55, 36, 0, time.UTC),  // 30 days + rand(1 - 24 hours) in future
 	})
 	testsuite.AssertContactFires(t, rt, testdb.Dan.ID, map[string]time.Time{
-		fmt.Sprintf("T:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 50, 27, 0, time.UTC), // 5 minutes in future
-		fmt.Sprintf("E:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 23, 0, time.UTC), // 10 minutes in future
-		fmt.Sprintf("S:%s", scDan.Session.UUID()): time.Date(2025, 3, 28, 12, 9, 23, 0, time.UTC),  // 30 days + rand(1 - 24 hours) in future
+		fmt.Sprintf("T:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 50, 28, 0, time.UTC), // 5 minutes in future
+		fmt.Sprintf("E:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 24, 0, time.UTC), // 10 minutes in future
+		fmt.Sprintf("S:%s", scDan.Session.UUID()): time.Date(2025, 3, 28, 12, 9, 24, 0, time.UTC),  // 30 days + rand(1 - 24 hours) in future
 	})
 
 	scene := testsuite.ResumeSession(t, rt, oa, testdb.Bob, "no")
@@ -99,7 +99,7 @@ func TestSessionCreationAndUpdating(t *testing.T) {
 
 	// check we have a new contact fire for wait expiration but not timeout (wait doesn't have a timeout)
 	testsuite.AssertContactFires(t, rt, testdb.Bob.ID, map[string]time.Time{
-		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 42, 0, time.UTC), // updated
+		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 45, 0, time.UTC), // updated
 		fmt.Sprintf("S:%s", scBob.Session.UUID()): time.Date(2025, 3, 28, 9, 55, 36, 0, time.UTC),  // unchanged
 	})
 
@@ -195,7 +195,8 @@ func TestSessionWithSubflows(t *testing.T) {
 		fmt.Sprintf("S:%s", scene.Session.UUID()): time.Date(2025, 3, 28, 9, 55, 36, 0, time.UTC),  // 30 days + rand(1 - 24 hours) in future
 	})
 
-	modelSession, err := models.GetWaitingSessionForContact(ctx, rt, oa, contact, scene.Session.UUID())
+	mc, contact, _ = testdb.Ann.Load(t, rt, oa)
+	modelSession, err := models.GetContactWaitingSession(ctx, rt, oa, mc)
 	require.NoError(t, err)
 	assert.Equal(t, scene.Session.UUID(), modelSession.UUID)
 	assert.Equal(t, child.UUID, modelSession.CurrentFlowUUID)
@@ -203,7 +204,7 @@ func TestSessionWithSubflows(t *testing.T) {
 	msg2 := flows.NewMsgIn(testdb.Ann.URN, nil, "yes", nil, "")
 	scene = runner.NewScene(mc, contact)
 
-	err = scene.ResumeSession(ctx, rt, oa, modelSession, resumes.NewMsg(events.NewMsgReceived(msg2)))
+	err = scene.ResumeSession(ctx, rt, oa, modelSession, resumes.NewMsg(events.NewMsgReceived(msg2, "")))
 	require.NoError(t, err)
 	err = scene.Commit(ctx, rt, oa)
 	require.NoError(t, err)
@@ -253,7 +254,7 @@ func TestSessionFailedStart(t *testing.T) {
 		"current_session_uuid": nil, "current_flow_id": nil,
 	})
 
-	assert.Equal(t, []string{"failure"}, testsuite.GetHistoryEventTypes(t, rt, false)[testdb.Ann.UUID])
+	assert.Equal(t, []string{"failure"}, testsuite.GetHistoryEventTypes(t, rt, false, time.Time{})[testdb.Ann.UUID])
 }
 
 func TestFlowStats(t *testing.T) {
@@ -448,7 +449,7 @@ func TestResumeSession(t *testing.T) {
 	}
 }
 
-func TestBroadcast(t *testing.T) {
+func TestBroadcastWithLock(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
 	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetDynamo)
@@ -466,8 +467,10 @@ func TestBroadcast(t *testing.T) {
 	batch1 := bcast.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID}, true, false)
 	batch2 := bcast.CreateBatch([]models.ContactID{testdb.Cat.ID}, false, true)
 
-	err = runner.Broadcast(ctx, rt, oa, bcast, batch1)
+	scenes, skipped, err := runner.BroadcastWithLock(ctx, rt, oa, bcast, batch1, models.StartModeBackground)
 	assert.NoError(t, err)
+	assert.Len(t, scenes, 2)
+	assert.Len(t, skipped, 0)
 
 	test.AssertEqualJSON(t, []byte(`[
 		{
@@ -508,14 +511,65 @@ func TestBroadcast(t *testing.T) {
 			"PK": "con#a393abc0-283d-4c9b-a1b3-641a035c34bf",
 			"SK": "evt#01969b47-096b-76f8-ae7f-f8b243c49ff5"
 		}
-	]`), jsonx.MustMarshal(testsuite.GetHistoryItems(t, rt, false)))
+	]`), jsonx.MustMarshal(testsuite.GetHistoryItems(t, rt, false, time.Time{})))
 
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE broadcast_id = $1 AND created_by_id = $2`, bcast.ID, bcast.CreatedByID).Returns(2)
 
-	err = runner.Broadcast(ctx, rt, oa, bcast, batch2)
+	scenes, skipped, err = runner.BroadcastWithLock(ctx, rt, oa, bcast, batch2, models.StartModeBackground)
 	assert.NoError(t, err)
+	assert.Len(t, scenes, 1)
+	assert.Len(t, skipped, 0)
 
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE broadcast_id = $1 AND created_by_id = $2`, bcast.ID, bcast.CreatedByID).Returns(3)
+
+	// create waiting sessions for Ann and Bob so we can test skip and interrupt modes
+	testdb.InsertWaitingSession(t, rt, testdb.Org1, testdb.Ann, models.FlowTypeMessaging, nil, testdb.Favorites)
+	testdb.InsertWaitingSession(t, rt, testdb.Org1, testdb.Bob, models.FlowTypeMessaging, nil, testdb.Favorites)
+
+	// test skip mode: Ann and Bob have sessions so should be skipped, Cat should receive
+	b2 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401d", "eng", map[i18n.Language]string{"eng": "Skippable"}, nil, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
+	bcast2, err := models.GetBroadcastByID(ctx, rt.DB, b2.ID)
+	require.NoError(t, err)
+
+	skipBatch := bcast2.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID, testdb.Cat.ID}, true, true)
+	scenes, skipped, err = runner.BroadcastWithLock(ctx, rt, oa, bcast2, skipBatch, models.StartModeSkip)
+	assert.NoError(t, err)
+	assert.Len(t, skipped, 0) // all contacts were locked successfully
+	assert.Len(t, scenes, 3)
+
+	// Ann and Bob should have been skipped (no broadcast set), Cat should have received
+	assert.Nil(t, scenes[0].Broadcast)    // Ann (10000) - has session, skipped
+	assert.Nil(t, scenes[1].Broadcast)    // Bob (10001) - has session, skipped
+	assert.NotNil(t, scenes[2].Broadcast) // Cat (10002) - no session, receives broadcast
+
+	// only 1 new message created (for Cat)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE broadcast_id = $1`, bcast2.ID).Returns(1)
+
+	// Ann and Bob should still be in their flow
+	testsuite.AssertContactInFlow(t, rt, testdb.Ann, testdb.Favorites)
+	testsuite.AssertContactInFlow(t, rt, testdb.Bob, testdb.Favorites)
+
+	// test interrupt mode: Ann and Bob have sessions which should be interrupted, all should receive
+	b3 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401e", "eng", map[i18n.Language]string{"eng": "Interrupting"}, nil, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
+	bcast3, err := models.GetBroadcastByID(ctx, rt.DB, b3.ID)
+	require.NoError(t, err)
+
+	intBatch := bcast3.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID, testdb.Cat.ID}, true, true)
+	scenes, skipped, err = runner.BroadcastWithLock(ctx, rt, oa, bcast3, intBatch, models.StartModeInterrupt)
+	assert.NoError(t, err)
+	assert.Len(t, skipped, 0)
+	assert.Len(t, scenes, 3)
+
+	// all contacts should have received the broadcast
+	assert.NotNil(t, scenes[0].Broadcast) // Ann
+	assert.NotNil(t, scenes[1].Broadcast) // Bob
+	assert.NotNil(t, scenes[2].Broadcast) // Cat
+
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE broadcast_id = $1`, bcast3.ID).Returns(3)
+
+	// Ann and Bob's previous sessions should have been interrupted
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowsession WHERE contact_uuid = $1 AND status = 'I'`, testdb.Ann.UUID).Returns(1)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowsession WHERE contact_uuid = $1 AND status = 'I'`, testdb.Bob.UUID).Returns(1)
 }
 
 func assertFlowActivityCounts(t *testing.T, rt *runtime.Runtime, flowID models.FlowID, expected map[string]int) {

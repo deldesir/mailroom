@@ -159,6 +159,20 @@
                     "type": "contact_name_changed"
                 }
             }
+        ],
+        "assert_search": [
+            {
+                "query": "name = Tarzan",
+                "contacts": [
+                    10000
+                ]
+            },
+            {
+                "query": "name = \"Geoff Newman\"",
+                "contacts": [
+                    10002
+                ]
+            }
         ]
     }
 ]

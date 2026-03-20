@@ -41,10 +41,6 @@ func (t *MsgReceived) Type() string {
 	return TypeMsgReceived
 }
 
-func (t *MsgReceived) UseReadOnly() bool {
-	return false
-}
-
 func (t *MsgReceived) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, mc *models.Contact) error {
 	return t.perform(ctx, rt, oa, mc)
 }
@@ -74,13 +70,6 @@ func (t *MsgReceived) perform(ctx context.Context, rt *runtime.Runtime, oa *mode
 		}
 	}
 
-	// if we have URNs make sure the message URN is our highest priority (this is usually a noop)
-	if len(mc.URNs()) > 0 && channel != nil {
-		if err := mc.UpdatePreferredURN(ctx, rt.DB, oa, t.URNID, channel); err != nil {
-			return fmt.Errorf("error changing primary URN: %w", err)
-		}
-	}
-
 	// flow will only see the attachments we were able to fetch
 	availableAttachments := make([]utils.Attachment, 0, len(attachments))
 	for _, att := range attachments {
@@ -89,8 +78,14 @@ func (t *MsgReceived) perform(ctx context.Context, rt *runtime.Runtime, oa *mode
 		}
 	}
 
+	// associate this message with the last open ticket for this contact if there is one
+	var ticketUUID flows.TicketUUID
+	if tks := mc.Tickets(); len(tks) > 0 {
+		ticketUUID = tks[len(tks)-1].UUID
+	}
+
 	msgIn := flows.NewMsgIn(t.URN, channel.Reference(), t.Text, availableAttachments, string(t.MsgExternalID))
-	msgEvent := events.NewMsgReceived(msgIn)
+	msgEvent := events.NewMsgReceived(msgIn, ticketUUID)
 	msgEvent.UUID_ = t.MsgUUID
 
 	// build our flow contact
@@ -108,13 +103,22 @@ func (t *MsgReceived) perform(ctx context.Context, rt *runtime.Runtime, oa *mode
 	}
 
 	if t.NewContact {
-		if err := scene.NewContact(ctx, rt, oa); err != nil {
+		if err := scene.ReevaluateGroups(ctx, rt, oa); err != nil {
 			return fmt.Errorf("error calculating groups for new contact: %w", err)
 		}
 	} else if contact.Status() == flows.ContactStatusStopped {
 		// if we get a message from a stopped contact, unstop them
 		if err := scene.ApplyModifier(ctx, rt, oa, modifiers.NewStatus(flows.ContactStatusActive), models.NilUserID, ""); err != nil {
 			return fmt.Errorf("error applying modifier to unstop contact: %w", err)
+		}
+	}
+
+	// if we have URNs make sure the message URN is our highest priority (this is usually a noop)
+	if len(mc.URNs()) > 0 && channel != nil {
+		if ch := oa.SessionAssets().Channels().Get(channel.UUID()); ch != nil {
+			if err := scene.ApplyModifier(ctx, rt, oa, modifiers.NewAffinity(t.URN, ch), models.NilUserID, ""); err != nil {
+				return fmt.Errorf("error applying affinity modifier: %w", err)
+			}
 		}
 	}
 
@@ -145,16 +149,12 @@ func (t *MsgReceived) handleMsgEvent(ctx context.Context, rt *runtime.Runtime, o
 	}
 
 	// look for a waiting session for this contact
-	var session *models.Session
-	var flow *models.Flow
-	var err error
-
-	if scene.DBContact.CurrentSessionUUID() != "" {
-		session, err = models.GetWaitingSessionForContact(ctx, rt, oa, scene.Contact, scene.DBContact.CurrentSessionUUID())
-		if err != nil {
-			return fmt.Errorf("error loading waiting session for contact %s: %w", scene.ContactUUID(), err)
-		}
+	session, err := models.GetContactWaitingSession(ctx, rt, oa, scene.DBContact)
+	if err != nil {
+		return fmt.Errorf("error loading waiting session for contact %s: %w", scene.ContactUUID(), err)
 	}
+
+	var flow *models.Flow
 
 	if session != nil {
 		// if we have a waiting voice session, we want to leave it as is

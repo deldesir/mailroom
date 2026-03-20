@@ -11,7 +11,13 @@ import (
 	"github.com/nyaruka/mailroom/runtime"
 )
 
-const TypeInterruptFlow = "interrupt_flow"
+const (
+	TypeInterruptFlow = "interrupt_flow"
+
+	// valkey key prefix used to track the number of batches remaining to be interrupted for a flow
+	interruptFlowProgressKey = "interrupt_flow_progress"
+	interruptFlowProgressTTL = 15 * time.Minute
+)
 
 func init() {
 	RegisterType(TypeInterruptFlow, func() Task { return &InterruptFlow{} })
@@ -42,8 +48,23 @@ func (t *InterruptFlow) Perform(ctx context.Context, rt *runtime.Runtime, oa *mo
 		return fmt.Errorf("error getting waiting sessions for flow: %w", err)
 	}
 
-	for batch := range slices.Chunk(sessionRefs, interruptSessionBatchSize) {
-		task := &InterruptSessionBatch{Sessions: batch, Status: flows.SessionStatusInterrupted}
+	counter := FlowInterruptCounter(t.FlowID)
+
+	if len(sessionRefs) == 0 {
+		if err := counter.Clear(ctx, rt.VK); err != nil {
+			return fmt.Errorf("error clearing flow interrupt progress key: %w", err)
+		}
+		return nil
+	}
+
+	batches := slices.Collect(slices.Chunk(sessionRefs, interruptSessionBatchSize))
+
+	if err := counter.Init(ctx, rt.VK, len(batches)); err != nil {
+		return fmt.Errorf("error setting flow interrupt batches remaining key: %w", err)
+	}
+
+	for _, batch := range batches {
+		task := &InterruptSessionBatch{Sessions: batch, Status: flows.SessionStatusInterrupted, FlowID: t.FlowID}
 
 		if err := Queue(ctx, rt, rt.Queues.Batch, oa.OrgID(), task, false); err != nil {
 			return fmt.Errorf("error queueing interrupt session batch task: %w", err)
@@ -51,4 +72,9 @@ func (t *InterruptFlow) Perform(ctx context.Context, rt *runtime.Runtime, oa *mo
 	}
 
 	return nil
+}
+
+// FlowInterruptCounter returns a counter for tracking flow interruption progress for the given flow.
+func FlowInterruptCounter(flowID models.FlowID) *Counter {
+	return NewCounter(fmt.Sprintf("%s:%d", interruptFlowProgressKey, flowID), interruptFlowProgressTTL)
 }

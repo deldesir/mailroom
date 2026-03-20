@@ -6,6 +6,7 @@ import (
 
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/core/models"
+	"github.com/nyaruka/mailroom/core/search"
 	"github.com/nyaruka/mailroom/testsuite"
 	"github.com/nyaruka/mailroom/testsuite/testdb"
 	"github.com/stretchr/testify/require"
@@ -14,7 +15,7 @@ import (
 func TestSend(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
+	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey|testsuite.ResetDynamo|testsuite.ResetElastic)
 
 	// add an unreachable contact (i.e. no URNs)
 	testdb.InsertContact(t, rt, testdb.Org1, "f5e5c595-0cba-4eb9-b1e6-41d7f7f0add6", "Mr Unreachable", "eng", models.ContactStatusActive)
@@ -29,7 +30,7 @@ func TestSend(t *testing.T) {
 func TestDelete(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
+	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey|testsuite.ResetDynamo|testsuite.ResetElastic)
 
 	testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "1", models.MsgStatusHandled)
 	testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.TwilioChannel, testdb.Ann, "2", models.MsgStatusPending)
@@ -41,7 +42,7 @@ func TestDelete(t *testing.T) {
 func TestHandle(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
+	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey|testsuite.ResetDynamo|testsuite.ResetElastic)
 
 	testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "hello", models.MsgStatusHandled)
 	testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.TwilioChannel, testdb.Ann, "hello", models.MsgStatusPending)
@@ -53,7 +54,7 @@ func TestHandle(t *testing.T) {
 func TestResend(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
+	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey|testsuite.ResetDynamo|testsuite.ResetElastic)
 
 	testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "hello", models.MsgStatusHandled)
 	testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.TwilioChannel, testdb.Ann, "how can we help", nil, models.MsgStatusSent, false)
@@ -67,7 +68,7 @@ func TestResend(t *testing.T) {
 func TestBroadcast(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
+	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey|testsuite.ResetDynamo|testsuite.ResetElastic)
 
 	optIn := testdb.InsertOptIn(t, rt, testdb.Org1, "45aec4dd-945f-4511-878f-7d8516fbd336", "Polls")
 	require.Equal(t, models.OptInID(30000), optIn.ID)
@@ -88,4 +89,18 @@ func TestBroadcastPreview(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
 	testsuite.RunWebTests(t, rt, "testdata/broadcast_preview.json")
+}
+
+func TestSearch(t *testing.T) {
+	_, rt := testsuite.Runtime(t)
+
+	defer testsuite.Reset(t, rt, testsuite.ResetElastic|testsuite.ResetDynamo)
+
+	testsuite.IndexMessages(t, rt, []search.MessageDoc{
+		{CreatedOn: time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC), OrgID: testdb.Org1.ID, UUID: "01968bb7-ca00-7000-8000-000000000001", ContactUUID: testdb.Ann.UUID, Text: "hello world"},
+		{CreatedOn: time.Date(2026, 1, 15, 13, 0, 0, 0, time.UTC), OrgID: testdb.Org1.ID, UUID: "01968bee-b880-7000-8000-000000000002", ContactUUID: testdb.Bob.UUID, Text: "hello there friend", InTicket: true},
+		{CreatedOn: time.Date(2026, 1, 15, 14, 0, 0, 0, time.UTC), OrgID: testdb.Org1.ID, UUID: "01968c25-a700-7000-8000-000000000003", ContactUUID: testdb.Cat.UUID, Text: "goodbye world"},
+	})
+
+	testsuite.RunWebTests(t, rt, "testdata/search.json")
 }

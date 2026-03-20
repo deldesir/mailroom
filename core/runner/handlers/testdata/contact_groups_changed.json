@@ -123,6 +123,15 @@
                     "type": "contact_groups_changed"
                 }
             }
+        ],
+        "assert_search": [
+            {
+                "query": "group = Testers",
+                "contacts": [
+                    10000,
+                    10002
+                ]
+            }
         ]
     }
 ]

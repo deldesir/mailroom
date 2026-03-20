@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	valkey "github.com/gomodule/redigo/redis"
 	"github.com/lib/pq"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil"
@@ -26,7 +26,6 @@ import (
 	"github.com/nyaruka/mailroom/runtime"
 	"github.com/nyaruka/null/v3"
 	"github.com/nyaruka/vkutil/locks"
-	"github.com/vinovest/sqlx"
 )
 
 func init() {
@@ -130,6 +129,7 @@ func (c *Contact) CreatedOn() time.Time                  { return c.createdOn }
 func (c *Contact) ModifiedOn() time.Time                 { return c.modifiedOn }
 func (c *Contact) LastSeenOn() *time.Time                { return c.lastSeenOn }
 func (c *Contact) CurrentFlowID() FlowID                 { return c.currentFlowID }
+func (c *Contact) SetCurrentFlowID(id FlowID)            { c.currentFlowID = id }
 func (c *Contact) CurrentSessionUUID() flows.SessionUUID { return c.currentSessionUUID }
 func (c *Contact) Tickets() []*Ticket                    { return c.tickets }
 
@@ -184,54 +184,6 @@ func (c *Contact) UpdateLastSeenOn(ctx context.Context, db DBorTx, lastSeenOn ti
 	}
 
 	c.lastSeenOn = &lastSeenOn
-	return nil
-}
-
-// UpdatePreferredURN updates the URNs for the contact (if needbe) to have the passed in URN as top priority
-// with the passed in channel as the preferred channel
-func (c *Contact) UpdatePreferredURN(ctx context.Context, db DBorTx, oa *OrgAssets, urnID URNID, channel *Channel) error {
-	// no urns? that's an error
-	if len(c.urns) == 0 {
-		return fmt.Errorf("can't set preferred URN on contact with no URNs")
-	}
-
-	// we are already the top URN, nothing to do
-	if c.urns[0].ID == urnID && c.urns[0].ChannelID == channel.ID() {
-		return nil
-	}
-
-	topURN := c.GetURN(urnID)
-	if topURN == nil {
-		return fmt.Errorf("contact doesn't appear to own URN with id #%d", urnID)
-	}
-
-	topURN.ChannelID = channel.ID()
-	topURN.Priority = topURNPriority
-
-	// make new list of URNs with this one first
-	newURNs := make([]*ContactURN, 0, len(c.urns))
-	newURNs = append(newURNs, topURN)
-
-	priority := topURNPriority - 1
-	for _, u := range c.urns {
-		if u.ID != urnID {
-			newURNs = append(newURNs, u)
-		}
-		u.Priority = priority
-		priority--
-	}
-
-	c.urns = newURNs
-
-	// write our new state to the db
-	if err := UpdateURNPriorityAndChannel(ctx, db, c.urns); err != nil {
-		return fmt.Errorf("error updating urns for contact: %w", err)
-	}
-
-	if err := UpdateContactModifiedOn(ctx, db, []ContactID{c.ID()}); err != nil {
-		return fmt.Errorf("error updating modified on on contact: %w", err)
-	}
-
 	return nil
 }
 
@@ -395,26 +347,6 @@ func LoadContactsByUUID(ctx context.Context, db Queryer, oa *OrgAssets, uuids []
 	return LoadContacts(ctx, db, oa, ids)
 }
 
-// GetNewestContactModifiedOn returns the newest modified_on for a contact in the passed in org
-func GetNewestContactModifiedOn(ctx context.Context, db Queryer, oa *OrgAssets) (*time.Time, error) {
-	rows, err := db.QueryContext(ctx, "SELECT modified_on FROM contacts_contact WHERE org_id = $1 ORDER BY modified_on DESC LIMIT 1", oa.OrgID())
-	if err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("error selecting most recently changed contact for org: %d: %w", oa.OrgID(), err)
-	}
-	defer rows.Close()
-	if err != sql.ErrNoRows {
-		rows.Next()
-		var newest time.Time
-		err = rows.Scan(&newest)
-		if err != nil {
-			return nil, fmt.Errorf("error scanning most recent contact modified_on for org: %d: %w", oa.OrgID(), err)
-		}
-
-		return &newest, nil
-	}
-
-	return nil, nil
-}
 
 // GetContactIDsFromReferences gets the contact ids for the given org and set of references. Note that the order of the returned contacts
 // won't necessarily match the order of the references.
@@ -455,6 +387,13 @@ func queryContactIDs(ctx context.Context, db Queryer, query string, args ...any)
 		return nil, fmt.Errorf("error scanning contact ids: %w", err)
 	}
 	return ids, nil
+}
+
+const sqlSelectContactIDsPage = `SELECT id FROM contacts_contact WHERE org_id = $1 AND is_active = TRUE AND id > $2 ORDER BY id LIMIT $3`
+
+// GetContactIDsPage returns a page of contact IDs for the given org using cursor-based pagination.
+func GetContactIDsPage(ctx context.Context, db Queryer, orgID OrgID, afterID ContactID, limit int) ([]ContactID, error) {
+	return queryContactIDs(ctx, db, sqlSelectContactIDsPage, orgID, int(afterID), limit)
 }
 
 type ContactURN struct {
@@ -1177,7 +1116,7 @@ func UpdateContactURNs(ctx context.Context, rt *runtime.Runtime, db DBorTx, oa *
 			// clear Valkey record of this claim
 			claimKey := fmt.Sprintf("urn-claim:%d:%s", oa.OrgID(), urn.Identity)
 
-			if _, err := redis.DoContext(vc, ctx, "DEL", claimKey); err != nil {
+			if _, err := valkey.DoContext(vc, ctx, "DEL", claimKey); err != nil {
 				return fmt.Errorf("error clearing URN claim in Valkey: %w", err)
 			}
 
@@ -1186,15 +1125,6 @@ func UpdateContactURNs(ctx context.Context, rt *runtime.Runtime, db DBorTx, oa *
 
 	// NOTE: caller needs to update modified on for this contact
 	return nil
-}
-
-func FilterContactIDsByNotInFlow(ctx context.Context, db *sqlx.DB, contacts []ContactID) ([]ContactID, error) {
-	var filtered []ContactID
-
-	if err := db.SelectContext(ctx, &filtered, `SELECT id FROM contacts_contact WHERE id = ANY($1) AND current_flow_id IS NULL`, pq.Array(contacts)); err != nil {
-		return nil, fmt.Errorf("error filtering contacts by not in flow: %w", err)
-	}
-	return filtered, nil
 }
 
 const sqlUpdateContactURNPriorityAndChannel = `
@@ -1278,6 +1208,9 @@ func ContactClaimURN(ctx context.Context, rt *runtime.Runtime, org *Org, contact
 	if err != nil {
 		return false, fmt.Errorf("error grabbing lock for URN claiming: %w", err)
 	}
+	if lock == "" {
+		return false, fmt.Errorf("timeout waiting for URN claiming lock")
+	}
 	defer locker.Release(ctx, rt.VK, lock)
 
 	vc := rt.VK.Get()
@@ -1286,8 +1219,8 @@ func ContactClaimURN(ctx context.Context, rt *runtime.Runtime, org *Org, contact
 	identity := urn.Identity()
 	claimKey := fmt.Sprintf("urn-claim:%d:%s", org.ID(), identity)
 
-	owner, err := redis.Int64(redis.DoContext(vc, ctx, "GET", claimKey))
-	if err != nil && err != redis.ErrNil {
+	owner, err := valkey.Int64(valkey.DoContext(vc, ctx, "GET", claimKey))
+	if err != nil && err != valkey.ErrNil {
 		return false, fmt.Errorf("error checking URN claim in Valkey: %w", err)
 	}
 
@@ -1308,7 +1241,7 @@ func ContactClaimURN(ctx context.Context, rt *runtime.Runtime, org *Org, contact
 	// Record URN as claimed in Valkey - this will be cleared in UpdateContactURNs when the claim is committed to the
 	// database. There's potentially a problem here if session errors because we'll still have this claim lingering
 	// for 60 seconds... but that doesn't happen very often
-	if _, err := redis.DoContext(vc, ctx, "SET", claimKey, contact.ID(), "EX", 60); err != nil {
+	if _, err := valkey.DoContext(vc, ctx, "SET", claimKey, contact.ID(), "EX", 60); err != nil {
 		return false, fmt.Errorf("error recording URN claim in Valkey: %w", err)
 	}
 

@@ -100,7 +100,7 @@ func TestInsertSessions(t *testing.T) {
 		Columns(map[string]any{"status": "C", "session_type": "M", "current_flow_uuid": nil})
 }
 
-func TestGetWaitingSessionForContact(t *testing.T) {
+func TestGetContactWaitingSession(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
 	defer testsuite.Reset(t, rt, testsuite.ResetData)
@@ -110,9 +110,9 @@ func TestGetWaitingSessionForContact(t *testing.T) {
 	testdb.InsertWaitingSession(t, rt, testdb.Org1, testdb.Cat, models.FlowTypeMessaging, nil, testdb.Favorites)
 
 	oa := testdb.Org1.Load(t, rt)
-	mc, contact, _ := testdb.Ann.Load(t, rt, oa)
+	mc, _, _ := testdb.Ann.Load(t, rt, oa)
 
-	session, err := models.GetWaitingSessionForContact(ctx, rt, oa, contact, mc.CurrentSessionUUID())
+	session, err := models.GetContactWaitingSession(ctx, rt, oa, mc)
 	assert.NoError(t, err)
 	assert.NotNil(t, session)
 	assert.Equal(t, sessionUUID, session.UUID)

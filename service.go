@@ -10,7 +10,7 @@ import (
 
 	"github.com/appleboy/go-fcm"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	"github.com/gomodule/redigo/redis"
+	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/aws/cwatch"
 	"github.com/nyaruka/gocommon/aws/dynamo"
 	"github.com/nyaruka/mailroom/core/crons"
@@ -89,7 +89,7 @@ func (s *Service) Start() error {
 	}
 
 	// test DynamoDB tables
-	if err := dynamo.Test(s.ctx, s.rt.Dynamo, c.DynamoTablePrefix+"Main", c.DynamoTablePrefix+"History"); err != nil {
+	if err := dynamo.Test(s.ctx, s.rt.Dynamo.Main.Client(), c.DynamoTablePrefix+"Main", c.DynamoTablePrefix+"History"); err != nil {
 		log.Error("dynamodb not reachable", "error", err)
 	} else {
 		log.Info("dynamodb ok")
@@ -103,7 +103,7 @@ func (s *Service) Start() error {
 	}
 
 	// test Elasticsearch
-	ping, err := s.rt.ES.Ping().Do(s.ctx)
+	ping, err := s.rt.ES.Client.Ping().Do(s.ctx)
 	if err != nil {
 		log.Error("elasticsearch not available", "error", err)
 	} else if !ping {
@@ -154,7 +154,7 @@ func (s *Service) checkLastShutdown(ctx context.Context) error {
 	vc := s.rt.VK.Get()
 	defer vc.Close()
 
-	exists, err := redis.Bool(redis.DoContext(vc, ctx, "HEXISTS", appNodesRunningKey, nodeID))
+	exists, err := valkey.Bool(valkey.DoContext(vc, ctx, "HEXISTS", appNodesRunningKey, nodeID))
 	if err != nil {
 		return fmt.Errorf("error checking last shutdown: %w", err)
 	}
@@ -162,7 +162,7 @@ func (s *Service) checkLastShutdown(ctx context.Context) error {
 	if exists {
 		slog.Error("node did not shutdown cleanly last time")
 	} else {
-		if _, err := redis.DoContext(vc, ctx, "HSET", appNodesRunningKey, nodeID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		if _, err := valkey.DoContext(vc, ctx, "HSET", appNodesRunningKey, nodeID, time.Now().UTC().Format(time.RFC3339)); err != nil {
 			return fmt.Errorf("error setting app node state: %w", err)
 		}
 	}
@@ -174,7 +174,7 @@ func (s *Service) recordShutdown(ctx context.Context) error {
 	vc := s.rt.VK.Get()
 	defer vc.Close()
 
-	if _, err := redis.DoContext(vc, ctx, "HDEL", appNodesRunningKey, nodeID); err != nil {
+	if _, err := valkey.DoContext(vc, ctx, "HDEL", appNodesRunningKey, nodeID); err != nil {
 		return fmt.Errorf("error recording shutdown: %w", err)
 	}
 	return nil
@@ -238,7 +238,11 @@ func (s *Service) reportMetrics(ctx context.Context) (int, error) {
 		cwatch.Datum("QueuedTasks", float64(realtimeSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "realtime")),
 		cwatch.Datum("QueuedTasks", float64(batchSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "batch")),
 		cwatch.Datum("QueuedTasks", float64(throttledSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "throttled")),
-		cwatch.Datum("DynamoSpooledItems", float64(s.rt.Spool.Size()), types.StandardUnitCount, hostDim),
+		cwatch.Datum("DynamoSpooledItems", float64(s.rt.Dynamo.Spool.Size()), types.StandardUnitCount, hostDim),
+	)
+
+	metrics = append(metrics,
+		cwatch.Datum("ElasticSpooledItems", float64(s.rt.ES.Spool.Size()), types.StandardUnitCount, hostDim),
 	)
 
 	if err := s.rt.CW.Send(ctx, metrics...); err != nil {
