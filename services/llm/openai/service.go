@@ -18,7 +18,7 @@ import (
 
 const (
 	TypeOpenAI   = "openai"
-	TypeOpenClaw = "openclaw"
+	TypeCustomAI = "custom_ai"
 
 	configAPIKey   = "api_key"
 	configEndpoint = "endpoint"
@@ -26,7 +26,7 @@ const (
 
 func init() {
 	models.RegisterLLMService(TypeOpenAI, New)
-	models.RegisterLLMService(TypeOpenClaw, New)
+	models.RegisterLLMService(TypeCustomAI, New)
 }
 
 // an LLM service implementation for OpenAI
@@ -65,7 +65,7 @@ func (s *service) Response(ctx context.Context, instructions, input string, maxT
 	}
 
 	// Try to parse input as JSON to see if it contains structured messages
-	// This enables "Experimental Multi-Turn" support as per OpenClaw docs
+	// This enables multi-turn conversation support
 	var inputPayload struct {
 		Messages []struct {
 			Role    string `json:"role"`
