@@ -1,3 +1,27 @@
+v26.1.75 (2026-03-25)
+-------------------------
+ * Remove fuzziness on message searches
+ * Update ordering for message search for contact-specific queries
+
+v26.1.74 (2026-03-24)
+-------------------------
+ * Use contact UUID as _id in new contacts ES index
+
+v26.1.73 (2026-03-24)
+-------------------------
+ * CI releasing tweaks
+
+v26.1.72 (2026-03-24)
+-------------------------
+ * Update goflow to v0.272.0 and use new es.Converter API
+ * Update to go 1.26
+ * Even more test cleanup
+
+v26.1.71 (2026-03-23)
+-------------------------
+ * Make tests always use v2 contacts index and remove rp-indexer dependency
+ * Use config toggle to switch contact search between v1 and v2 index
+
 v26.1.70 (2026-03-19)
 -------------------------
  * Move message indexing from OpenSearch to Elasticsearch

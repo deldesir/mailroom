@@ -3,9 +3,9 @@ package search
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
@@ -17,6 +17,13 @@ import (
 	"github.com/nyaruka/mailroom/core/models"
 	"github.com/nyaruka/mailroom/runtime"
 )
+
+func contactsIndex(rt *runtime.Runtime) (string, bool) {
+	if rt.Config.ElasticContactsUseOwn {
+		return rt.Config.ElasticContactsIndex, true
+	}
+	return rt.Config.ElasticContactsLegacyIndex, false
+}
 
 // AssetMapper maps resolved assets in queries to how we identify them in ES which in the case
 // of flows and groups is their ids. We can do this by just type cracking them to their models.
@@ -32,15 +39,19 @@ func (m *AssetMapper) Group(g assets.Group) int64 {
 
 var assetMapper = &AssetMapper{}
 
-func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeIDs []models.ContactID, query *contactql.ContactQuery, v2 bool) elastic.Query {
+func newConverter(oa *models.OrgAssets, uuidAsDocID bool) *es.Converter {
+	return es.NewConverter(oa.Env(), assetMapper, uuidAsDocID)
+}
+
+func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeIDs []models.ContactID, query *contactql.ContactQuery, own bool) elastic.Query {
 	// use filter context for all clauses since we never sort by relevance score, and filter clauses
 	// are cacheable and skip scoring
 	filter := []elastic.Query{
 		elastic.Term("org_id", oa.OrgID()),
 	}
 
-	// rp-indexer index has is_active field, v2 index only indexes active contacts
-	if !v2 {
+	// rp-indexer index has is_active field, own index only indexes active contacts
+	if !own {
 		filter = append(filter, elastic.Term("is_active", true))
 	}
 
@@ -53,17 +64,18 @@ func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.
 	}
 
 	if query != nil {
-		filter = append(filter, es.ToElasticQuery(oa.Env(), assetMapper, query))
+		conv := newConverter(oa, own)
+		filter = append(filter, conv.Query(query))
 	}
 
 	bq := map[string]any{"filter": filter}
 
 	if len(excludeIDs) > 0 {
-		ids := make([]string, len(excludeIDs))
+		ids := make([]any, len(excludeIDs))
 		for i := range excludeIDs {
-			ids[i] = fmt.Sprintf("%d", excludeIDs[i])
+			ids[i] = excludeIDs[i]
 		}
-		bq["must_not"] = []elastic.Query{elastic.Ids(ids...)}
+		bq["must_not"] = []elastic.Query{{"terms": map[string]any{"id": ids}}}
 	}
 
 	return elastic.Query{"bool": bq}
@@ -89,38 +101,16 @@ func GetContactTotal(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAss
 		group = nil
 	}
 
-	v1Count, err := getContactTotal(ctx, rt, oa, group, status, parsed, false)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if rt.Config.ElasticContactsV2Verify {
-		v2Count, v2Err := getContactTotal(ctx, rt, oa, group, status, parsed, true)
-		if v2Err != nil {
-			slog.Warn("error counting v2 contacts index for comparison", "org_id", oa.OrgID(), "error", v2Err)
-		} else if v1Count != v2Count {
-			slog.Error("v1/v2 contacts index count mismatch", "org_id", oa.OrgID(), "query", query, "v1_total", v1Count, "v2_total", v2Count)
-		}
-	}
-
-	return parsed, v1Count, nil
-}
-
-func getContactTotal(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, parsed *contactql.ContactQuery, v2 bool) (int64, error) {
-	eq := buildContactQuery(oa, group, status, nil, parsed, v2)
+	index, own := contactsIndex(rt)
+	eq := buildContactQuery(oa, group, status, nil, parsed, own)
 	src := map[string]any{"query": eq}
-
-	index := rt.Config.ElasticContactsIndex
-	if v2 {
-		index = rt.Config.ElasticContactsIndexV2
-	}
 
 	count, err := rt.ES.Client.Count().Index(index).Routing(oa.OrgID().String()).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("error performing count: %w", err)
+		return nil, 0, fmt.Errorf("error performing count: %w", err)
 	}
 
-	return count.Count, nil
+	return parsed, count.Count, nil
 }
 
 // GetContactIDsForQueryPage returns a page of contact ids for the given query and sort
@@ -143,53 +133,31 @@ func GetContactIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *mod
 		group = nil
 	}
 
-	fieldSort, err := es.ToElasticSort(sort, oa.SessionAssets())
+	index, own := contactsIndex(rt)
+
+	conv := newConverter(oa, own)
+	fieldSort, err := conv.Sort(sort, oa.SessionAssets())
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("error parsing sort: %w", err)
 	}
 
-	v1Start := time.Now()
-	v1Hits, v1Total, err := getContactIDsForQueryPage(ctx, rt, oa, group, status, excludeIDs, parsed, fieldSort, offset, pageSize, false)
+	start := time.Now()
+	hits, total, err := getContactIDsForQueryPage(ctx, rt, oa, group, status, excludeIDs, parsed, fieldSort, offset, pageSize, index, own)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	rt.Stats.RecordContactSearch("v1", time.Since(v1Start))
+	rt.Stats.RecordSearch("contacts", time.Since(start))
 
-	if rt.Config.ElasticContactsV2Verify {
-		v2Start := time.Now()
-		v2Hits, v2Total, v2Err := getContactIDsForQueryPage(ctx, rt, oa, group, status, excludeIDs, parsed, fieldSort, offset, pageSize, true)
-		rt.Stats.RecordContactSearch("v2", time.Since(v2Start))
-
-		if v2Err != nil {
-			slog.Warn("error searching v2 contacts index for comparison", "org_id", oa.OrgID(), "error", v2Err)
-		} else if v1Total != v2Total || !contactIDsEqual(v1Hits, v2Hits) {
-			example := findMismatchExample(v1Hits, v2Hits)
-			slog.Error("v1/v2 contacts index search mismatch",
-				"org_id", oa.OrgID(),
-				"query", query,
-				"v1_total", v1Total,
-				"v2_total", v2Total,
-				"v1_page_count", len(v1Hits),
-				"v2_page_count", len(v2Hits),
-				"example_contact", example,
-			)
-		}
-	}
-
-	return parsed, v1Hits, v1Total, nil
+	return parsed, hits, total, nil
 }
 
-func getContactIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeIDs []models.ContactID, parsed *contactql.ContactQuery, fieldSort map[string]any, offset int, pageSize int, v2 bool) ([]models.ContactID, int64, error) {
+func getContactIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeIDs []models.ContactID, parsed *contactql.ContactQuery, fieldSort map[string]any, offset int, pageSize int, index string, own bool) ([]models.ContactID, int64, error) {
 	start := time.Now()
-	eq := buildContactQuery(oa, group, status, excludeIDs, parsed, v2)
-
-	index := rt.Config.ElasticContactsIndex
-	if v2 {
-		index = rt.Config.ElasticContactsIndexV2
-	}
+	eq := buildContactQuery(oa, group, status, excludeIDs, parsed, own)
 
 	src := map[string]any{
 		"_source":          false,
+		"docvalue_fields":  []string{"id"},
 		"query":            eq,
 		"sort":             []any{fieldSort},
 		"from":             offset,
@@ -230,52 +198,9 @@ func GetContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 		group = nil
 	}
 
-	v1Eq := buildContactQuery(oa, group, status, nil, parsed, false)
-	v1IDs, err := getContactIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndex, v1Eq, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	if rt.Config.ElasticContactsV2Verify {
-		v2Eq := buildContactQuery(oa, group, status, nil, parsed, true)
-		v2IDs, v2Err := getContactIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndexV2, v2Eq, limit)
-		if v2Err != nil {
-			slog.Warn("error searching v2 contacts index for comparison", "org_id", oa.OrgID(), "error", v2Err)
-		} else if !contactIDsEqual(v1IDs, v2IDs) {
-			example := findMismatchExample(v1IDs, v2IDs)
-			slog.Error("v1/v2 contacts index search mismatch",
-				"org_id", oa.OrgID(),
-				"query", query,
-				"v1_count", len(v1IDs),
-				"v2_count", len(v2IDs),
-				"example_contact", example,
-			)
-		}
-	}
-
-	return v1IDs, nil
-}
-
-// GetContactIDsForQueryV2 searches only the v2 contacts index. This is intended for tests that verify v2 indexing.
-func GetContactIDsForQueryV2(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, query string, limit int) ([]models.ContactID, error) {
-	env := oa.Env()
-	var parsed *contactql.ContactQuery
-	var err error
-
-	if query != "" {
-		parsed, err = contactql.ParseQuery(env, query, oa.SessionAssets())
-		if err != nil {
-			return nil, fmt.Errorf("error parsing query: %s: %w", query, err)
-		}
-	}
-
-	if group != nil && !group.Visible() {
-		status = models.ContactStatus(group.Type())
-		group = nil
-	}
-
-	eq := buildContactQuery(oa, group, status, nil, parsed, true)
-	return getContactIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndexV2, eq, limit)
+	index, own := contactsIndex(rt)
+	eq := buildContactQuery(oa, group, status, nil, parsed, own)
+	return getContactIDsForQuery(ctx, rt, oa, index, eq, limit)
 }
 
 func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, index string, eq elastic.Query, limit int) ([]models.ContactID, error) {
@@ -286,6 +211,7 @@ func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 	if limit >= 0 && limit <= 10_000 {
 		src := map[string]any{
 			"_source":          false,
+		"docvalue_fields":  []string{"id"},
 			"query":            eq,
 			"sort":             []any{sort},
 			"from":             0,
@@ -315,6 +241,7 @@ func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 
 	src := map[string]any{
 		"_source":          false,
+		"docvalue_fields":  []string{"id"},
 		"query":            eq,
 		"sort":             []any{sort},
 		"pit":              map[string]any{"id": pit.Id, "keep_alive": "1m"},
@@ -351,51 +278,17 @@ func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 	return ids, nil
 }
 
-// appendIDsFromESHits extracts contact IDs from Elasticsearch hits where _id is the database contact ID
+// appendIDsFromESHits extracts contact IDs from Elasticsearch hits using the id docvalue field
 func appendIDsFromESHits(ids []models.ContactID, hits []types.Hit) []models.ContactID {
 	for _, hit := range hits {
-		id, err := strconv.Atoi(*hit.Id_)
-		if err == nil {
-			ids = append(ids, models.ContactID(id))
+		raw, ok := hit.Fields["id"]
+		if !ok {
+			continue
+		}
+		var vals []models.ContactID
+		if err := json.Unmarshal(raw, &vals); err == nil && len(vals) > 0 {
+			ids = append(ids, vals[0])
 		}
 	}
 	return ids
-}
-
-// contactIDsEqual returns true if two slices contain the same contact IDs in the same order
-func contactIDsEqual(a, b []models.ContactID) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// findMismatchExample returns a description of the first contact ID that differs between v1 and v2 results
-func findMismatchExample(v1IDs, v2IDs []models.ContactID) string {
-	v2Set := make(map[models.ContactID]bool, len(v2IDs))
-	for _, id := range v2IDs {
-		v2Set[id] = true
-	}
-	for _, id := range v1IDs {
-		if !v2Set[id] {
-			return fmt.Sprintf("contact %d in v1 but not v2", id)
-		}
-	}
-
-	v1Set := make(map[models.ContactID]bool, len(v1IDs))
-	for _, id := range v1IDs {
-		v1Set[id] = true
-	}
-	for _, id := range v2IDs {
-		if !v1Set[id] {
-			return fmt.Sprintf("contact %d in v2 but not v1", id)
-		}
-	}
-
-	return "same IDs but different order"
 }

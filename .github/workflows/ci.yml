@@ -1,13 +1,11 @@
 name: CI
 on: [push, pull_request]
-env:
-  go-version: "1.25.x"
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
     container:
-      image: golang:1.25-trixie
+      image: golang:1.26-trixie
 
     services:
       valkey:
@@ -30,7 +28,7 @@ jobs:
           xpack.security.enabled: false
         options: --health-cmd "curl http://localhost:9200/_cluster/health" --health-interval 10s --health-timeout 5s --health-retries 5
       localstack:
-        image: localstack/localstack:latest
+        image: localstack/localstack:4.14
         env:
           SERVICES: s3,dynamodb,cloudwatch
         ports:
@@ -73,12 +71,17 @@ jobs:
     needs: [test]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    container:
+      image: golang:1.26-trixie
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory /__w/mailroom/mailroom
 
       - name: Fetch GoFlow docs
         # for backward compatibility, English docs are copied to root of docs directory
@@ -88,7 +91,7 @@ jobs:
           cp ./docs/en-us/*.* docs/
 
       - name: Publish release
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         if: ${{ !contains(github.ref, '-') }}
         with:
           args: release --clean
@@ -96,7 +99,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish non-master release
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         if: contains(github.ref, '-')
         with:
           args: release --clean --skip-validate
