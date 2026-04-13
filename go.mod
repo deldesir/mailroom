@@ -21,6 +21,7 @@ require (
 	github.com/gomodule/redigo v1.9.3
 	github.com/gorilla/schema v1.4.1
 	github.com/lib/pq v1.11.2
+	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 	github.com/nyaruka/ezconf v0.6.1
 	github.com/nyaruka/gocommon v1.76.2
 	github.com/nyaruka/goflow v0.271.0
@@ -40,7 +41,6 @@ require (
 	google.golang.org/api v0.267.0
 	google.golang.org/genai v1.46.0
 	google.golang.org/protobuf v1.36.11
-	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 )
 
 replace github.com/nyaruka/courier => ../courier
@@ -127,11 +127,11 @@ require (
 	go.opentelemetry.io/contrib/detectors/gcp v1.40.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.65.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.65.0 // indirect
-	go.opentelemetry.io/otel v1.40.0 // indirect
-	go.opentelemetry.io/otel/metric v1.40.0 // indirect
-	go.opentelemetry.io/otel/sdk v1.40.0 // indirect
-	go.opentelemetry.io/otel/sdk/metric v1.40.0 // indirect
-	go.opentelemetry.io/otel/trace v1.40.0 // indirect
+	go.opentelemetry.io/otel v1.43.0 // indirect
+	go.opentelemetry.io/otel/metric v1.43.0 // indirect
+	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
+	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
+	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
