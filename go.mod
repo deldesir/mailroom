@@ -21,6 +21,7 @@ require (
 	github.com/gomodule/redigo v1.9.3
 	github.com/gorilla/schema v1.4.1
 	github.com/lib/pq v1.11.2
+	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 	github.com/nyaruka/ezconf v0.6.1
 	github.com/nyaruka/gocommon v1.76.2
 	github.com/nyaruka/goflow v0.271.0
@@ -40,7 +41,6 @@ require (
 	google.golang.org/api v0.267.0
 	google.golang.org/genai v1.46.0
 	google.golang.org/protobuf v1.36.11
-	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 )
 
 replace github.com/nyaruka/courier => ../courier
@@ -144,7 +144,7 @@ require (
 	google.golang.org/genproto v0.0.0-20260217215200-42d3e9bedb6d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260217215200-42d3e9bedb6d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260217215200-42d3e9bedb6d // indirect
-	google.golang.org/grpc v1.79.1 // indirect
+	google.golang.org/grpc v1.79.3 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
