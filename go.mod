@@ -21,6 +21,7 @@ require (
 	github.com/gomodule/redigo v1.9.3
 	github.com/gorilla/schema v1.4.1
 	github.com/lib/pq v1.11.2
+	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 	github.com/nyaruka/ezconf v0.6.1
 	github.com/nyaruka/gocommon v1.76.2
 	github.com/nyaruka/goflow v0.271.0
@@ -40,7 +41,6 @@ require (
 	google.golang.org/api v0.267.0
 	google.golang.org/genai v1.46.0
 	google.golang.org/protobuf v1.36.11
-	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 )
 
 replace github.com/nyaruka/courier => ../courier
@@ -64,7 +64,7 @@ require (
 	github.com/MicahParks/keyfunc v1.9.0 // indirect
 	github.com/Shopify/gomail v0.0.0-20220729171026-0784ece65e69 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.7 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.8 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.12 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.12 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.20 // indirect
