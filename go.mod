@@ -21,6 +21,7 @@ require (
 	github.com/gomodule/redigo v1.9.3
 	github.com/gorilla/schema v1.4.1
 	github.com/lib/pq v1.11.2
+	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 	github.com/nyaruka/ezconf v0.6.1
 	github.com/nyaruka/gocommon v1.76.2
 	github.com/nyaruka/goflow v0.271.0
@@ -40,7 +41,6 @@ require (
 	google.golang.org/api v0.267.0
 	google.golang.org/genai v1.46.0
 	google.golang.org/protobuf v1.36.11
-	github.com/nyaruka/courier v0.0.0-00010101000000-000000000000
 )
 
 replace github.com/nyaruka/courier => ../courier
@@ -93,7 +93,7 @@ require (
 	github.com/fatih/structs v1.1.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
