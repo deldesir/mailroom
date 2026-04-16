@@ -6,11 +6,11 @@ import (
 
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/flows/events"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/runner"
-	"github.com/nyaruka/mailroom/core/runner/hooks"
-	"github.com/nyaruka/mailroom/core/search"
-	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/runner"
+	"github.com/nyaruka/mailroom/v26/core/runner/hooks"
+	"github.com/nyaruka/mailroom/v26/core/search"
+	"github.com/nyaruka/mailroom/v26/runtime"
 )
 
 func init() {
@@ -28,8 +28,8 @@ func handleMsgReceived(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 		scene.AttachPreCommitHook(hooks.UpdateMessageHandled, event)
 	}
 
-	// index message to Elasticsearch if it's not IVR and has sufficient text
-	if scene.Call == nil && len(event.Msg.Text()) >= search.MessageTextMinLength {
+	// index message to Elasticsearch if it has sufficient text
+	if len(event.Msg.Text()) >= search.MessageTextMinLength {
 		scene.AttachPostCommitHook(hooks.IndexMessages, &search.MessageDoc{
 			CreatedOn:   event.CreatedOn(),
 			OrgID:       oa.OrgID(),

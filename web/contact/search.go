@@ -6,10 +6,11 @@ import (
 	"net/http"
 
 	"github.com/nyaruka/goflow/contactql"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/search"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/web"
+	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/search"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/web"
 )
 
 func init() {
@@ -27,21 +28,21 @@ func init() {
 //	  "limit": 50
 //	}
 type searchRequest struct {
-	OrgID      models.OrgID       `json:"org_id"      validate:"required"`
-	GroupID    models.GroupID     `json:"group_id"    validate:"required"`
-	ExcludeIDs []models.ContactID `json:"exclude_ids"`
-	Query      string             `json:"query"`
-	Sort       string             `json:"sort"`
-	Offset     int                `json:"offset"`
-	Limit      int                `json:"limit"`
+	OrgID        models.OrgID        `json:"org_id"      validate:"required"`
+	GroupID      models.GroupID      `json:"group_id"    validate:"required"`
+	ExcludeUUIDs []flows.ContactUUID `json:"exclude_uuids"`
+	Query        string              `json:"query"`
+	Sort         string              `json:"sort"`
+	Offset       int                 `json:"offset"`
+	Limit        int                 `json:"limit"`
 }
 
 // Response for a contact search
 //
 //	{
 //	  "query": "age > 10",
-//	  "contact_ids": [5,10,15],
-//	  "total": 3,
+//	  "contact_uuids": ["b699a406-7e44-49be-9f01-1a82893e8a10"],
+//	  "total": 1,
 //	  "metadata": {
 //	    "fields": [
 //	      {"key": "age", "name": "Age"}
@@ -50,10 +51,10 @@ type searchRequest struct {
 //	  }
 //	}
 type searchResponse struct {
-	Query      string                `json:"query"`
-	ContactIDs []models.ContactID    `json:"contact_ids"`
-	Total      int64                 `json:"total"`
-	Metadata   *contactql.Inspection `json:"metadata,omitempty"`
+	Query        string                `json:"query"`
+	ContactUUIDs []flows.ContactUUID   `json:"contact_uuids"`
+	Total        int64                 `json:"total"`
+	Metadata     *contactql.Inspection `json:"metadata,omitempty"`
 }
 
 // handles a contact search request
@@ -68,7 +69,7 @@ func handleSearch(ctx context.Context, rt *runtime.Runtime, r *searchRequest) (a
 		r.Limit = 50
 	}
 
-	parsed, hits, total, err := search.GetContactIDsForQueryPage(ctx, rt, oa, group, r.ExcludeIDs, r.Query, r.Sort, r.Offset, r.Limit)
+	parsed, hits, total, err := search.GetContactUUIDsForQueryPage(ctx, rt, oa, group, r.ExcludeUUIDs, r.Query, r.Sort, r.Offset, r.Limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error searching page: %w", err)
 	}
@@ -84,10 +85,10 @@ func handleSearch(ctx context.Context, rt *runtime.Runtime, r *searchRequest) (a
 
 	// build our response
 	response := &searchResponse{
-		Query:      normalized,
-		ContactIDs: hits,
-		Total:      total,
-		Metadata:   metadata,
+		Query:        normalized,
+		ContactUUIDs: hits,
+		Total:        total,
+		Metadata:     metadata,
 	}
 
 	return response, http.StatusOK, nil

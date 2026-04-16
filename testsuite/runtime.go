@@ -1,7 +1,6 @@
 package testsuite
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -13,21 +12,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/nyaruka/gocommon/aws/dynamo/dyntest"
-	"github.com/nyaruka/mailroom/core/goflow"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/rp-indexer/v10/indexers"
-	ixruntime "github.com/nyaruka/rp-indexer/v10/runtime"
+	"github.com/nyaruka/mailroom/v26/core/goflow"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	elasticURL               = "http://elastic:9200"
-	elasticContactsIndex     = "test_contacts"
-	elasticContactsIndexV2   = "test_contacts-v2"
-	elasticMessagesIndex     = "messages-test"
-	postgresDumpPath         = "./testsuite/testdata/postgres.dump"
-	dynamoTablesPath         = "./testsuite/testdata/dynamo.json"
+	postgresDumpPath = "./testsuite/testdata/postgres.dump"
+	dynamoTablesPath = "./testsuite/testdata/dynamo.json"
 )
 
 // Refresh is our type for the pieces of org assets we want fresh (not cached)
@@ -75,10 +68,6 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	cfg.DeploymentID = "test"
 	cfg.Port = 8091
 	cfg.DB = "postgres://mailroom_test:temba@postgres/mailroom_test?sslmode=disable&Timezone=UTC"
-	cfg.ElasticContactsIndex = elasticContactsIndex
-	cfg.ElasticContactsIndexV2 = elasticContactsIndexV2
-	cfg.ElasticMessagesIndex = elasticMessagesIndex
-	cfg.Elastic = elasticURL
 	cfg.AWSAccessKeyID = "root"
 	cfg.AWSSecretAccessKey = "tembatemba"
 	cfg.S3Endpoint = "http://localstack:4566"
@@ -86,6 +75,8 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	cfg.S3PathStyle = true
 	cfg.DynamoEndpoint = "http://localstack:4566"
 	cfg.DynamoTablePrefix = "Test"
+	cfg.ElasticContactsIndex = "contacts-test"
+	cfg.ElasticMessagesIndex = "messages-test"
 	cfg.SpoolDir = absPath("./_test_spool")
 
 	err := cfg.Parse()
@@ -95,11 +86,8 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	require.NoError(t, err)
 
 	createBucket(t, rt, rt.Config.S3AttachmentsBucket)
-	setupElasticContactsV2(t, rt)
+	setupElasticContacts(t, rt)
 	setupElasticMessages(t, rt)
-
-	// clear stale message indexes from previous test runs (they share deterministic mock UUIDs)
-	deleteElasticMessages(t, rt)
 
 	// create Postgres tables if necessary
 	_, err = rt.DB.Exec("SELECT * from orgs_org")
@@ -133,18 +121,6 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	})
 
 	return t.Context(), rt
-}
-
-// reindexes data changes to Elastic
-func ReindexElastic(t *testing.T, rt *runtime.Runtime) {
-	t.Helper()
-
-	contactsIndexer := indexers.NewContactIndexer(elasticURL, elasticContactsIndex, 1, 1, 100)
-	_, err := contactsIndexer.Index(&ixruntime.Runtime{DB: rt.DB.DB}, false, false)
-	require.NoError(t, err)
-
-	_, err = rt.ES.Client.Indices.Refresh().Index(elasticContactsIndex).Do(t.Context())
-	require.NoError(t, err)
 }
 
 // resets our database to our base state from our RapidPro dump
@@ -224,77 +200,11 @@ func createBucket(t *testing.T, rt *runtime.Runtime, bucket string) {
 	}
 }
 
-// clears indexed data in Elastic
 func resetElastic(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
-	exists, err := rt.ES.Client.Indices.ExistsAlias(elasticContactsIndex).Do(t.Context())
-	require.NoError(t, err)
-
-	if exists {
-		// get any indexes for the contacts alias
-		ar, err := rt.ES.Client.Indices.GetAlias().Name(elasticContactsIndex).Do(t.Context())
-		require.NoError(t, err)
-
-		// and delete them
-		for index := range ar {
-			_, err := rt.ES.Client.Indices.Delete(index).Do(t.Context())
-			require.NoError(t, err)
-		}
-	}
-
-	// delete and recreate the v2 contacts index
-	rt.ES.Client.Indices.Delete(elasticContactsIndexV2).Do(t.Context())
-	setupElasticContactsV2(t, rt)
-
-	// delete any message indexes
-	deleteElasticMessages(t, rt)
-
-	ReindexElastic(t, rt)
-}
-
-// setupElasticContactsV2 creates the v2 contacts index in Elastic if it doesn't already exist
-func setupElasticContactsV2(t *testing.T, rt *runtime.Runtime) {
-	t.Helper()
-
-	exists, err := rt.ES.Client.Indices.Exists(elasticContactsIndexV2).IsSuccess(t.Context())
-	require.NoError(t, err)
-
-	if !exists {
-		contactsBody := ReadFile(t, absPath("./testsuite/testdata/es_contacts.json"))
-		_, err = rt.ES.Client.Indices.Create(elasticContactsIndexV2).Raw(bytes.NewReader(contactsBody)).Do(t.Context())
-		require.NoError(t, err)
-	}
-}
-
-// setupElasticMessages creates the index template for messages in Elastic
-func setupElasticMessages(t *testing.T, rt *runtime.Runtime) {
-	t.Helper()
-
-	messagesBody := ReadFile(t, absPath("./testsuite/testdata/es_messages.json"))
-
-	// replace placeholder with actual index name for test
-	body := bytes.ReplaceAll(messagesBody, []byte("{{INDEX}}"), []byte(rt.Config.ElasticMessagesIndex))
-
-	_, err := rt.ES.Client.Indices.PutIndexTemplate(rt.Config.ElasticMessagesIndex).Raw(bytes.NewReader(body)).Do(t.Context())
-	require.NoError(t, err)
-}
-
-// deleteElasticMessages deletes all message indexes matching the configured pattern
-func deleteElasticMessages(t *testing.T, rt *runtime.Runtime) {
-	t.Helper()
-
-	pattern := rt.Config.ElasticMessagesIndex + "-*"
-
-	indexes, err := rt.ES.Client.Cat.Indices().Index(pattern).Do(t.Context())
-	require.NoError(t, err)
-
-	for _, idx := range indexes {
-		if idx.Index != nil {
-			_, err := rt.ES.Client.Indices.Delete(*idx.Index).Do(t.Context())
-			require.NoError(t, err)
-		}
-	}
+	rt.ES.Writer.Flush()
+	clearElasticIndexes(t, rt)
 }
 
 func resetDynamo(t *testing.T, rt *runtime.Runtime) {

@@ -1,3 +1,107 @@
+v26.1.92 (2026-04-13)
+-------------------------
+ * Index newly created contacts in Elasticsearch (#1042)
+
+v26.1.91 (2026-04-08)
+-------------------------
+ * Update to latest goflow
+
+v26.1.90 (2026-04-08)
+-------------------------
+ * Fix TestEventReceived and TestMsgReceivedTask after goflow scheme check
+
+v26.1.89 (2026-04-08)
+-------------------------
+ * Update to latest goflow
+
+v26.1.88 (2026-04-07)
+-------------------------
+ * Update to latest goflow that fixes routes modifier in set mode
+
+v26.1.87 (2026-04-07)
+-------------------------
+ * Update dependencies
+
+v26.1.86 (2026-04-07)
+-------------------------
+ * Use goflow routes modifier to save channel affinity for new URNs on msg_received
+
+v26.1.85 (2026-04-06)
+-------------------------
+ * Add /v26 major version suffix to module path
+
+v26.1.84 (2026-04-06)
+-------------------------
+ * Add config to exclude specific orgs from latency metrics
+
+v26.1.83 (2026-04-02)
+-------------------------
+ * Update export test snapshots for changed contact UUIDs
+
+v26.1.82 (2026-04-02)
+-------------------------
+ * Add other_urns to courier send message payload
+
+v26.1.81 (2026-04-02)
+-------------------------
+ * Validate contact tasks after deserializing from Valkey
+ * Add contact_changed task type for handling contact modifications from courier
+ * Update to latest phonenumbers
+
+v26.1.80 (2026-04-01)
+-------------------------
+ * Read from Org.root_location instead of Org.country
+ * De-index deleted messages from Elasticsearch
+ * Use contact UUIDs instead of IDs in contact/export endpoint
+
+v26.1.79 (2026-03-31)
+-------------------------
+ * Use contact UUIDs instead of IDs in contact/reindex endpoint
+ * Update gocommon and phonenumbers
+ * Use UUID-based ES search for recipient resolution
+
+v26.1.78 (2026-03-31)
+-------------------------
+ * Change /contact/search to return contact_uuids instead of contact_ids
+ * Simplify message indexing criteria to contact last_seen_on + text length
+
+v26.1.77 (2026-03-31)
+-------------------------
+ * Change /contact/search to use exclude_uuids instead of exclude_ids
+ * Add new_urn append support to msg_received task
+ * Bump valkey from 8.0 to 8.1 in CI
+
+v26.1.76 (2026-03-27)
+-------------------------
+ * Update to latest gocommon which adds bsuid URNs
+ * Update deps including goflow that relaxes restrictions on flow types on enter flow actions
+ * Add optional centrifugo support
+ * Remove support for legacy rp-indexer contacts index
+
+v26.1.75 (2026-03-25)
+-------------------------
+ * Remove fuzziness on message searches
+ * Update ordering for message search for contact-specific queries
+
+v26.1.74 (2026-03-24)
+-------------------------
+ * Use contact UUID as _id in new contacts ES index
+
+v26.1.73 (2026-03-24)
+-------------------------
+ * CI releasing tweaks
+
+v26.1.72 (2026-03-24)
+-------------------------
+ * Update goflow to v0.272.0 and use new es.Converter API
+ * Update to go 1.26
+ * Even more test cleanup
+
+v26.1.71 (2026-03-23)
+-------------------------
+ * Make tests always use v2 contacts index and remove rp-indexer dependency
+ * Use config toggle to switch contact search between v1 and v2 index
+
 v26.1.70 (2026-03-19)
 -------------------------
  * Move message indexing from OpenSearch to Elasticsearch

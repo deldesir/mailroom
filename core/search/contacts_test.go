@@ -10,11 +10,11 @@ import (
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/flows"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/search"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/search"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -118,12 +118,10 @@ func TestDeindexContacts(t *testing.T) {
 
 	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
-	// index all org1 and org2 contacts into the v2 index
-	testsuite.IndexOrgContacts(t, rt, testdb.Org1)
-	testsuite.IndexOrgContacts(t, rt, testdb.Org2)
+	testsuite.IndexContacts(t, rt)
 
 	refreshV2 := func() {
-		_, err := rt.ES.Client.Indices.Refresh().Index(rt.Config.ElasticContactsIndexV2).Do(ctx)
+		_, err := rt.ES.Client.Indices.Refresh().Index(rt.Config.ElasticContactsIndex).Do(ctx)
 		require.NoError(t, err)
 	}
 
@@ -134,17 +132,17 @@ func TestDeindexContacts(t *testing.T) {
 	assertSearchCountV2(t, rt, elastic.Term("org_id", testdb.Org1.ID), 124)
 	assertSearchCountV2(t, rt, elastic.Term("org_id", testdb.Org2.ID), 121)
 
-	// DeindexContactsByID operates on the v2 index
-	deindexedByID, err := search.DeindexContactsByID(ctx, rt, testdb.Org1.ID, []models.ContactID{testdb.Bob.ID, testdb.Cat.ID})
+	// DeindexContactsByUUID operates on the v3 index
+	deindexedByUUID, err := search.DeindexContactsByUUID(ctx, rt, testdb.Org1.ID, []flows.ContactUUID{testdb.Bob.UUID, testdb.Cat.UUID})
 	assert.NoError(t, err)
-	assert.Equal(t, 2, deindexedByID)
+	assert.Equal(t, 2, deindexedByUUID)
 
 	refreshV2()
 
 	assertSearchCountV2(t, rt, elastic.Term("org_id", testdb.Org1.ID), 122)
 	assertSearchCountV2(t, rt, elastic.Term("org_id", testdb.Org2.ID), 121)
 
-	// DeindexContactsByOrg also operates on the v2 index
+	// DeindexContactsByOrg also operates on the v3 index
 	deindexed, err := search.DeindexContactsByOrg(ctx, rt, testdb.Org1.ID, 100)
 	assert.NoError(t, err)
 	assert.Equal(t, 100, deindexed)
@@ -171,7 +169,7 @@ func TestDeindexContacts(t *testing.T) {
 func assertSearchCountV2(t *testing.T, rt *runtime.Runtime, query elastic.Query, expected int) {
 	src := map[string]any{"query": query}
 
-	resp, err := rt.ES.Client.Count().Index(rt.Config.ElasticContactsIndexV2).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(t.Context())
+	resp, err := rt.ES.Client.Count().Index(rt.Config.ElasticContactsIndex).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, expected, int(resp.Count))
 }

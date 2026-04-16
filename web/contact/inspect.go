@@ -7,9 +7,9 @@ import (
 
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/flows"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/web"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/web"
 )
 
 func init() {
@@ -85,14 +85,14 @@ func handleInspect(ctx context.Context, rt *runtime.Runtime, r *inspectRequest) 
 			return nil, 0, fmt.Errorf("error creating flow contact: %w", err)
 		}
 
-		// first add the URNs which have a corresponding channel (engine considers these destinations)
-		dests := flowContact.ResolveDestinations(true)
-		urnsSeen := make(map[string]bool, len(dests))
+		// first add the URNs which have a corresponding channel (engine considers these sendable)
+		routes := flowContact.ResolveRoutes(true)
+		urnsSeen := make(map[string]bool, len(routes))
 		urnInfos := make([]urnInfo, 0, len(flowContact.URNs()))
 
-		for _, d := range dests {
-			scheme, path, display := d.URN.Scheme, d.URN.Path, d.URN.Display
-			urnInfos = append(urnInfos, urnInfo{Channel: d.Channel.Reference(), Scheme: scheme, Path: path, Display: display})
+		for _, r := range routes {
+			scheme, path, _, display := r.URN.ToParts()
+			urnInfos = append(urnInfos, urnInfo{Channel: r.Channel.Reference(), Scheme: scheme, Path: path, Display: display})
 			urnsSeen[scheme+":"+path] = true
 		}
 

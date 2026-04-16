@@ -12,3 +12,4 @@ fabfile.*
 /_spool
 /mailroom
 /mrindex
+*-linux-*

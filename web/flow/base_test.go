@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 )
 
 func TestChangeLanguage(t *testing.T) {
@@ -57,6 +57,9 @@ func TestStart(t *testing.T) {
 
 func TestStartPreview(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
+	defer testsuite.Reset(t, rt, testsuite.ResetElastic)
+
+	testsuite.IndexContacts(t, rt)
 
 	testsuite.RunWebTests(t, rt, "testdata/start_preview.json")
 }

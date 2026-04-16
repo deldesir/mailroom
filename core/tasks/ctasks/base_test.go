@@ -7,14 +7,33 @@ import (
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
 	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/flows"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/tasks"
-	"github.com/nyaruka/mailroom/core/tasks/ctasks"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/tasks"
+	"github.com/nyaruka/mailroom/v26/core/tasks/ctasks"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestReadTask(t *testing.T) {
+	// valid contact_changed task
+	task, err := ctasks.ReadTask("contact_changed", []byte(`{"new_urn": {"value": "telegram:98765", "action": "append"}}`))
+	assert.NoError(t, err)
+	assert.Equal(t, "contact_changed", task.Type())
+
+	// invalid: missing required action field
+	_, err = ctasks.ReadTask("contact_changed", []byte(`{"new_urn": {"value": "telegram:98765"}}`))
+	assert.ErrorContains(t, err, "action")
+
+	// invalid: unsupported action value
+	_, err = ctasks.ReadTask("contact_changed", []byte(`{"new_urn": {"value": "telegram:98765", "action": "prepend"}}`))
+	assert.ErrorContains(t, err, "action")
+
+	// unknown task type
+	_, err = ctasks.ReadTask("unknown", []byte(`{}`))
+	assert.ErrorContains(t, err, "unknown task type")
+}
 
 func TestTimedEvents(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)

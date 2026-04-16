@@ -7,10 +7,10 @@ import (
 	"log/slog"
 
 	"github.com/nyaruka/gocommon/elastic"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/runner"
-	"github.com/nyaruka/mailroom/core/search"
-	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/runner"
+	"github.com/nyaruka/mailroom/v26/core/search"
+	"github.com/nyaruka/mailroom/v26/runtime"
 )
 
 // IndexMessages is our hook for indexing messages to Elasticsearch
@@ -21,7 +21,11 @@ type indexMessages struct{}
 func (h *indexMessages) Order() int { return 10 }
 
 func (h *indexMessages) Execute(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, scenes map[*runner.Scene][]any) error {
-	for _, args := range scenes {
+	for scene, args := range scenes {
+		if scene.DBContact.LastSeenOn() == nil {
+			continue
+		}
+
 		for _, a := range args {
 			msg := a.(*search.MessageDoc)
 
@@ -32,12 +36,14 @@ func (h *indexMessages) Execute(ctx context.Context, rt *runtime.Runtime, oa *mo
 
 			slog.Debug("indexing message to elasticsearch", "uuid", msg.UUID, "contact", msg.ContactUUID)
 
-			rt.ES.Writer.Queue(&elastic.Document{
-				Index:   msg.IndexName(rt.Config.ElasticMessagesIndex),
-				ID:      string(msg.UUID),
-				Routing: fmt.Sprintf("%d", msg.OrgID),
-				Body:    doc,
-			})
+			if rt.ES.Writer != nil {
+				rt.ES.Writer.Queue(&elastic.Document{
+					Index:   msg.IndexName(rt.Config.ElasticMessagesIndex),
+					ID:      string(msg.UUID),
+					Routing: fmt.Sprintf("%d", msg.OrgID),
+					Body:    doc,
+				})
+			}
 		}
 	}
 
