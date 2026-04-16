@@ -5,7 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
@@ -14,8 +15,9 @@ import (
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/goflow/contactql/es"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/runtime"
 )
 
 // AssetMapper maps resolved assets in queries to how we identify them in ES which in the case
@@ -32,16 +34,15 @@ func (m *AssetMapper) Group(g assets.Group) int64 {
 
 var assetMapper = &AssetMapper{}
 
-func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeIDs []models.ContactID, query *contactql.ContactQuery, v2 bool) elastic.Query {
+func newConverter(oa *models.OrgAssets, uuidAsDocID bool) *es.Converter {
+	return es.NewConverter(oa.Env(), assetMapper, uuidAsDocID)
+}
+
+func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []flows.ContactUUID, query *contactql.ContactQuery) elastic.Query {
 	// use filter context for all clauses since we never sort by relevance score, and filter clauses
 	// are cacheable and skip scoring
 	filter := []elastic.Query{
 		elastic.Term("org_id", oa.OrgID()),
-	}
-
-	// rp-indexer index has is_active field, v2 index only indexes active contacts
-	if !v2 {
-		filter = append(filter, elastic.Term("is_active", true))
 	}
 
 	if group != nil {
@@ -53,15 +54,16 @@ func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.
 	}
 
 	if query != nil {
-		filter = append(filter, es.ToElasticQuery(oa.Env(), assetMapper, query))
+		conv := newConverter(oa, true)
+		filter = append(filter, conv.Query(query))
 	}
 
 	bq := map[string]any{"filter": filter}
 
-	if len(excludeIDs) > 0 {
-		ids := make([]string, len(excludeIDs))
-		for i := range excludeIDs {
-			ids[i] = fmt.Sprintf("%d", excludeIDs[i])
+	if len(excludeUUIDs) > 0 {
+		ids := make([]string, len(excludeUUIDs))
+		for i := range excludeUUIDs {
+			ids[i] = string(excludeUUIDs[i])
 		}
 		bq["must_not"] = []elastic.Query{elastic.Ids(ids...)}
 	}
@@ -89,42 +91,26 @@ func GetContactTotal(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAss
 		group = nil
 	}
 
-	v1Count, err := getContactTotal(ctx, rt, oa, group, status, parsed, false)
-	if err != nil {
-		return nil, 0, err
+	// nanorp: return Postgres count when ES is disabled
+	if isNanorpMode(rt) {
+		total, postgresErr := GetContactTotalPostgres(ctx, rt, oa, group, status, nil, parsed)
+		return parsed, total, postgresErr
 	}
-
-	if rt.Config.ElasticContactsV2Verify {
-		v2Count, v2Err := getContactTotal(ctx, rt, oa, group, status, parsed, true)
-		if v2Err != nil {
-			slog.Warn("error counting v2 contacts index for comparison", "org_id", oa.OrgID(), "error", v2Err)
-		} else if v1Count != v2Count {
-			slog.Error("v1/v2 contacts index count mismatch", "org_id", oa.OrgID(), "query", query, "v1_total", v1Count, "v2_total", v2Count)
-		}
-	}
-
-	return parsed, v1Count, nil
-}
-
-func getContactTotal(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, parsed *contactql.ContactQuery, v2 bool) (int64, error) {
-	eq := buildContactQuery(oa, group, status, nil, parsed, v2)
-	src := map[string]any{"query": eq}
 
 	index := rt.Config.ElasticContactsIndex
-	if v2 {
-		index = rt.Config.ElasticContactsIndexV2
-	}
+	eq := buildContactQuery(oa, group, status, nil, parsed)
+	src := map[string]any{"query": eq}
 
 	count, err := rt.ES.Client.Count().Index(index).Routing(oa.OrgID().String()).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("error performing count: %w", err)
+		return nil, 0, fmt.Errorf("error performing count: %w", err)
 	}
 
-	return count.Count, nil
+	return parsed, count.Count, nil
 }
 
-// GetContactIDsForQueryPage returns a page of contact ids for the given query and sort
-func GetContactIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, excludeIDs []models.ContactID, query string, sort string, offset int, pageSize int) (*contactql.ContactQuery, []models.ContactID, int64, error) {
+// GetContactUUIDsForQueryPage returns a page of contact UUIDs for the given query and sort
+func GetContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, excludeUUIDs []flows.ContactUUID, query string, sort string, offset int, pageSize int) (*contactql.ContactQuery, []flows.ContactUUID, int64, error) {
 	env := oa.Env()
 	var parsed *contactql.ContactQuery
 	var err error
@@ -143,50 +129,49 @@ func GetContactIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *mod
 		group = nil
 	}
 
-	fieldSort, err := es.ToElasticSort(sort, oa.SessionAssets())
+	// nanorp: use Postgres fallback when ES is disabled
+	if isNanorpMode(rt) {
+		var sortField string
+		var sortDesc bool
+		
+		// Map simple sort strings from "id", "-created_on" to Postgres column representations
+		if sort != "" {
+			if strings.HasPrefix(sort, "-") {
+				sortDesc = true
+				sortField = sort[1:]
+			} else {
+				sortField = sort
+			}
+		}
+
+		slog.Debug("executing paged postgres local-first search override", "org_id", oa.OrgID())
+		starts := time.Now()
+		hits, total, postgresErr := GetContactUUIDsForQueryPagePostgres(ctx, rt, oa, group, status, excludeUUIDs, parsed, sortField, sortDesc, offset, pageSize)
+		if postgresErr == nil {
+			rt.Stats.RecordSearch("contacts", time.Since(starts))
+		}
+		return parsed, hits, total, postgresErr
+	}
+
+	conv := newConverter(oa, true)
+	fieldSort, err := conv.Sort(sort, oa.SessionAssets())
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("error parsing sort: %w", err)
 	}
 
-	v1Start := time.Now()
-	v1Hits, v1Total, err := getContactIDsForQueryPage(ctx, rt, oa, group, status, excludeIDs, parsed, fieldSort, offset, pageSize, false)
+	start := time.Now()
+	hits, total, err := getContactUUIDsForQueryPage(ctx, rt, oa, group, status, excludeUUIDs, parsed, fieldSort, offset, pageSize, rt.Config.ElasticContactsIndex)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	rt.Stats.RecordContactSearch("v1", time.Since(v1Start))
+	rt.Stats.RecordSearch("contacts", time.Since(start))
 
-	if rt.Config.ElasticContactsV2Verify {
-		v2Start := time.Now()
-		v2Hits, v2Total, v2Err := getContactIDsForQueryPage(ctx, rt, oa, group, status, excludeIDs, parsed, fieldSort, offset, pageSize, true)
-		rt.Stats.RecordContactSearch("v2", time.Since(v2Start))
-
-		if v2Err != nil {
-			slog.Warn("error searching v2 contacts index for comparison", "org_id", oa.OrgID(), "error", v2Err)
-		} else if v1Total != v2Total || !contactIDsEqual(v1Hits, v2Hits) {
-			example := findMismatchExample(v1Hits, v2Hits)
-			slog.Error("v1/v2 contacts index search mismatch",
-				"org_id", oa.OrgID(),
-				"query", query,
-				"v1_total", v1Total,
-				"v2_total", v2Total,
-				"v1_page_count", len(v1Hits),
-				"v2_page_count", len(v2Hits),
-				"example_contact", example,
-			)
-		}
-	}
-
-	return parsed, v1Hits, v1Total, nil
+	return parsed, hits, total, nil
 }
 
-func getContactIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeIDs []models.ContactID, parsed *contactql.ContactQuery, fieldSort map[string]any, offset int, pageSize int, v2 bool) ([]models.ContactID, int64, error) {
+func getContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []flows.ContactUUID, parsed *contactql.ContactQuery, fieldSort map[string]any, offset int, pageSize int, index string) ([]flows.ContactUUID, int64, error) {
 	start := time.Now()
-	eq := buildContactQuery(oa, group, status, excludeIDs, parsed, v2)
-
-	index := rt.Config.ElasticContactsIndex
-	if v2 {
-		index = rt.Config.ElasticContactsIndexV2
-	}
+	eq := buildContactQuery(oa, group, status, excludeUUIDs, parsed)
 
 	src := map[string]any{
 		"_source":          false,
@@ -202,21 +187,22 @@ func getContactIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *mod
 		return nil, 0, fmt.Errorf("error performing query: %w", err)
 	}
 
-	ids := make([]models.ContactID, 0, pageSize)
-	ids = appendIDsFromESHits(ids, results.Hits.Hits)
+	uuids := make([]flows.ContactUUID, 0, pageSize)
+	for _, hit := range results.Hits.Hits {
+		uuids = append(uuids, flows.ContactUUID(*hit.Id_))
+	}
 
-	slog.Debug("paged contact query complete", "org_id", oa.OrgID(), "index", index, "elapsed", time.Since(start), "page_count", len(ids), "total_count", results.Hits.Total.Value)
+	slog.Debug("paged contact query complete", "org_id", oa.OrgID(), "index", index, "elapsed", time.Since(start), "page_count", len(uuids), "total_count", results.Hits.Total.Value)
 
-	return ids, results.Hits.Total.Value, nil
+	return uuids, results.Hits.Total.Value, nil
 }
 
-// GetContactIDsForQuery returns up to limit the contact ids that match the given query, sorted by id. Limit of -1 means return all.
-func GetContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, query string, limit int) ([]models.ContactID, error) {
+// GetContactUUIDsForQuery returns up to limit the contact UUIDs that match the given query, sorted by contact ID. Limit of -1 means return all.
+func GetContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, query string, limit int) ([]flows.ContactUUID, error) {
 	env := oa.Env()
 	var parsed *contactql.ContactQuery
 	var err error
 
-	// turn into elastic query
 	if query != "" {
 		parsed, err = contactql.ParseQuery(env, query, oa.SessionAssets())
 		if err != nil {
@@ -230,57 +216,20 @@ func GetContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 		group = nil
 	}
 
-	v1Eq := buildContactQuery(oa, group, status, nil, parsed, false)
-	v1IDs, err := getContactIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndex, v1Eq, limit)
-	if err != nil {
-		return nil, err
+	// nanorp: use Postgres cursor looping when ES is disabled
+	if isNanorpMode(rt) {
+		slog.Debug("executing unpaged postgres local-first search override", "org_id", oa.OrgID())
+		return GetContactUUIDsForQueryPostgres(ctx, rt, oa, group, status, parsed, limit)
 	}
 
-	if rt.Config.ElasticContactsV2Verify {
-		v2Eq := buildContactQuery(oa, group, status, nil, parsed, true)
-		v2IDs, v2Err := getContactIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndexV2, v2Eq, limit)
-		if v2Err != nil {
-			slog.Warn("error searching v2 contacts index for comparison", "org_id", oa.OrgID(), "error", v2Err)
-		} else if !contactIDsEqual(v1IDs, v2IDs) {
-			example := findMismatchExample(v1IDs, v2IDs)
-			slog.Error("v1/v2 contacts index search mismatch",
-				"org_id", oa.OrgID(),
-				"query", query,
-				"v1_count", len(v1IDs),
-				"v2_count", len(v2IDs),
-				"example_contact", example,
-			)
-		}
-	}
+	eq := buildContactQuery(oa, group, status, nil, parsed)
 
-	return v1IDs, nil
+	return getContactUUIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndex, eq, limit)
 }
 
-// GetContactIDsForQueryV2 searches only the v2 contacts index. This is intended for tests that verify v2 indexing.
-func GetContactIDsForQueryV2(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, query string, limit int) ([]models.ContactID, error) {
-	env := oa.Env()
-	var parsed *contactql.ContactQuery
-	var err error
-
-	if query != "" {
-		parsed, err = contactql.ParseQuery(env, query, oa.SessionAssets())
-		if err != nil {
-			return nil, fmt.Errorf("error parsing query: %s: %w", query, err)
-		}
-	}
-
-	if group != nil && !group.Visible() {
-		status = models.ContactStatus(group.Type())
-		group = nil
-	}
-
-	eq := buildContactQuery(oa, group, status, nil, parsed, true)
-	return getContactIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndexV2, eq, limit)
-}
-
-func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, index string, eq elastic.Query, limit int) ([]models.ContactID, error) {
+func getContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, index string, eq elastic.Query, limit int) ([]flows.ContactUUID, error) {
 	sort := elastic.SortBy("id", true)
-	ids := make([]models.ContactID, 0, 100)
+	uuids := make([]flows.ContactUUID, 0, 100)
 
 	// if limit provided that can be done with single search, do that
 	if limit >= 0 && limit <= 10_000 {
@@ -297,7 +246,7 @@ func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 		if err != nil {
 			return nil, fmt.Errorf("error searching ES index: %w", err)
 		}
-		return appendIDsFromESHits(ids, results.Hits.Hits), nil
+		return appendUUIDsFromESHits(uuids, results.Hits.Hits), nil
 	}
 
 	// for larger limits we need to take a point in time and iterate through multiple search requests using search_after
@@ -332,14 +281,14 @@ func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 			break
 		}
 
-		ids = appendIDsFromESHits(ids, results.Hits.Hits)
+		uuids = appendUUIDsFromESHits(uuids, results.Hits.Hits)
 
-		if limit != -1 && len(ids) >= limit {
-			ids = ids[:limit]
+		if limit != -1 && len(uuids) >= limit {
+			uuids = uuids[:limit]
 			break
 		}
 		if limit != -1 {
-			if remaining := limit - len(ids); remaining < 10_000 {
+			if remaining := limit - len(uuids); remaining < 10_000 {
 				src["size"] = remaining
 			}
 		}
@@ -348,54 +297,31 @@ func getContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.
 		src["search_after"] = lastHit.Sort
 	}
 
-	return ids, nil
+	return uuids, nil
 }
 
-// appendIDsFromESHits extracts contact IDs from Elasticsearch hits where _id is the database contact ID
-func appendIDsFromESHits(ids []models.ContactID, hits []types.Hit) []models.ContactID {
+// appendUUIDsFromESHits extracts contact UUIDs from Elasticsearch hits using the document _id
+func appendUUIDsFromESHits(uuids []flows.ContactUUID, hits []types.Hit) []flows.ContactUUID {
 	for _, hit := range hits {
-		id, err := strconv.Atoi(*hit.Id_)
-		if err == nil {
-			ids = append(ids, models.ContactID(id))
-		}
+		uuids = append(uuids, flows.ContactUUID(*hit.Id_))
 	}
-	return ids
+	return uuids
 }
 
-// contactIDsEqual returns true if two slices contain the same contact IDs in the same order
-func contactIDsEqual(a, b []models.ContactID) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// findMismatchExample returns a description of the first contact ID that differs between v1 and v2 results
-func findMismatchExample(v1IDs, v2IDs []models.ContactID) string {
-	v2Set := make(map[models.ContactID]bool, len(v2IDs))
-	for _, id := range v2IDs {
-		v2Set[id] = true
-	}
-	for _, id := range v1IDs {
-		if !v2Set[id] {
-			return fmt.Sprintf("contact %d in v1 but not v2", id)
-		}
+// GetContactIDsForQuery is a temporary wrapper around GetContactUUIDsForQuery that converts the results back to
+// contact IDs. Used by call sites that still need IDs; these should be updated to work with UUIDs directly.
+func GetContactIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, query string, limit int) ([]models.ContactID, error) {
+	uuids, err := GetContactUUIDsForQuery(ctx, rt, oa, group, status, query, limit)
+	if err != nil {
+		return nil, err
 	}
 
-	v1Set := make(map[models.ContactID]bool, len(v1IDs))
-	for _, id := range v1IDs {
-		v1Set[id] = true
-	}
-	for _, id := range v2IDs {
-		if !v1Set[id] {
-			return fmt.Sprintf("contact %d in v2 but not v1", id)
-		}
+	ids, err := models.GetContactIDsFromUUIDs(ctx, rt.DB, oa.OrgID(), uuids)
+	if err != nil {
+		return nil, err
 	}
 
-	return "same IDs but different order"
+	slices.Sort(ids)
+
+	return ids, nil
 }

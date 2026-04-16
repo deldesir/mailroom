@@ -10,12 +10,13 @@ import (
 
 	"github.com/appleboy/go-fcm"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/centrifugal/gocent/v3"
 	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/aws/cwatch"
 	"github.com/nyaruka/gocommon/aws/dynamo"
-	"github.com/nyaruka/mailroom/core/crons"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/web"
+	"github.com/nyaruka/mailroom/v26/core/crons"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/web"
 )
 
 const (
@@ -88,37 +89,60 @@ func (s *Service) Start() error {
 		log.Info("valkey ok")
 	}
 
-	// test DynamoDB tables
-	if err := dynamo.Test(s.ctx, s.rt.Dynamo.Main.Client(), c.DynamoTablePrefix+"Main", c.DynamoTablePrefix+"History"); err != nil {
-		log.Error("dynamodb not reachable", "error", err)
+	// test DynamoDB tables (optional in nanoRP mode)
+	if s.rt.Dynamo.Client() != nil {
+		if err := dynamo.Test(s.ctx, s.rt.Dynamo.Client(), c.DynamoTablePrefix+"Main", c.DynamoTablePrefix+"History"); err != nil {
+			log.Error("dynamodb not reachable", "error", err)
+		} else {
+			log.Info("dynamodb ok")
+		}
 	} else {
-		log.Info("dynamodb ok")
+		log.Info("dynamodb disabled (nanoRP mode)")
 	}
 
-	// test S3 bucket
-	if err := s.rt.S3.Test(s.ctx, c.S3AttachmentsBucket); err != nil {
-		log.Error("attachments bucket not accessible", "error", err)
+	// test S3 bucket (optional in nanoRP mode)
+	if s.rt.S3 != nil {
+		if err := s.rt.S3.Test(s.ctx, c.S3AttachmentsBucket); err != nil {
+			log.Error("attachments bucket not accessible", "error", err)
+		} else {
+			log.Info("attachments bucket ok")
+		}
 	} else {
-		log.Info("attachments bucket ok")
+		log.Info("s3 disabled — using local filesystem (nanoRP mode)")
 	}
 
 	// test Elasticsearch
-	ping, err := s.rt.ES.Client.Ping().Do(s.ctx)
-	if err != nil {
-		log.Error("elasticsearch not available", "error", err)
-	} else if !ping {
-		log.Error("elasticsearch cluster not reachable")
+	if s.rt.ES.Client != nil {
+		ping, err := s.rt.ES.Client.Ping().Do(s.ctx)
+		if err != nil {
+			log.Error("elasticsearch not available", "error", err)
+		} else if !ping {
+			log.Error("elasticsearch cluster not reachable")
+		} else {
+			log.Info("elastic ok")
+		}
 	} else {
-		log.Info("elastic ok")
+		log.Info("elasticsearch disabled (nanoRP mode)")
 	}
 
 	if c.AndroidCredentialsFile != "" {
+		var err error
 		s.rt.FCM, err = fcm.NewClient(s.ctx, fcm.WithCredentialsFile(c.AndroidCredentialsFile))
 		if err != nil {
 			log.Error("unable to create FCM client", "error", err)
 		}
 	} else {
 		log.Warn("fcm not configured, no android syncing")
+	}
+
+	if c.CentrifugoEndpoint != "" {
+		s.rt.Centrifugo = gocent.New(gocent.Config{
+			Addr: c.CentrifugoEndpoint,
+			Key:  c.CentrifugoKey,
+		})
+		log.Info("centrifugo ok")
+	} else {
+		log.Warn("centrifugo not configured")
 	}
 
 	if err := s.rt.Start(); err != nil {
@@ -238,12 +262,18 @@ func (s *Service) reportMetrics(ctx context.Context) (int, error) {
 		cwatch.Datum("QueuedTasks", float64(realtimeSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "realtime")),
 		cwatch.Datum("QueuedTasks", float64(batchSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "batch")),
 		cwatch.Datum("QueuedTasks", float64(throttledSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "throttled")),
-		cwatch.Datum("DynamoSpooledItems", float64(s.rt.Dynamo.Spool.Size()), types.StandardUnitCount, hostDim),
 	)
+	if s.rt.Dynamo.Spool != nil {
+		metrics = append(metrics,
+			cwatch.Datum("DynamoSpooledItems", float64(s.rt.Dynamo.Spool.Size()), types.StandardUnitCount, hostDim),
+		)
+	}
 
-	metrics = append(metrics,
-		cwatch.Datum("ElasticSpooledItems", float64(s.rt.ES.Spool.Size()), types.StandardUnitCount, hostDim),
-	)
+	if s.rt.ES.Spool != nil {
+		metrics = append(metrics,
+			cwatch.Datum("ElasticSpooledItems", float64(s.rt.ES.Spool.Size()), types.StandardUnitCount, hostDim),
+		)
+	}
 
 	if err := s.rt.CW.Send(ctx, metrics...); err != nil {
 		return 0, fmt.Errorf("error sending metrics: %w", err)

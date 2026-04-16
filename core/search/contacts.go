@@ -8,14 +8,13 @@ import (
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/operationtype"
-	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/flows"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/shopspring/decimal"
 )
 
@@ -39,10 +38,10 @@ type ContactDocURN struct {
 	Path   string `json:"path"`
 }
 
-// ContactDoc represents a contact document in the contacts index. DBID is used as the document _id.
+// ContactDoc represents a contact document in the contacts index. UUID is used as the document _id.
 type ContactDoc struct {
-	DBID           models.ContactID     `json:"id"` // also used as _id
-	UUID           flows.ContactUUID    `json:"uuid"`
+	DBID           models.ContactID     `json:"id"`
+	UUID           flows.ContactUUID    `json:"-"` // used as _id, not in body
 	OrgID          models.OrgID         `json:"org_id"`
 	Name           string               `json:"name,omitempty"`
 	Status         models.ContactStatus `json:"status"`
@@ -137,7 +136,7 @@ func NewContactDoc(oa *models.OrgAssets, c *flows.Contact, currentFlowID models.
 
 // IndexContacts builds contact documents and queues them for indexing in Elastic.
 func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, flowContacts []*flows.Contact, currentFlows map[models.ContactID]models.FlowID) error {
-	if len(flowContacts) == 0 {
+	if len(flowContacts) == 0 || isNanorpMode(rt) {
 		return nil
 	}
 
@@ -161,10 +160,10 @@ func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsset
 		}
 
 		rt.ES.Writer.Queue(&elastic.Document{
-			Index:   rt.Config.ElasticContactsIndexV2,
-			ID:      doc.DBID.String(),
+			Index:   rt.Config.ElasticContactsIndex,
+			ID:      string(doc.UUID),
 			Routing: doc.OrgID.String(),
-			Version: dates.Now().UnixNano(),
+			Version: time.Now().UnixNano(),
 			Body:    body,
 		})
 	}
@@ -172,15 +171,24 @@ func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsset
 	return nil
 }
 
-// DeindexContactsByID de-indexes the contacts with the given IDs from Elastic
-func DeindexContactsByID(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactIDs []models.ContactID) (int, error) {
+// DeindexContactsByUUID de-indexes the contacts with the given UUIDs from Elastic
+func DeindexContactsByUUID(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []flows.ContactUUID) (int, error) {
+	if isNanorpMode(rt) {
+		return 0, nil
+	}
+
+	ids := make([]string, len(contactUUIDs))
+	for i, uuid := range contactUUIDs {
+		ids[i] = string(uuid)
+	}
+
 	cmds := &bytes.Buffer{}
-	for _, id := range contactIDs {
-		cmds.Write(jsonx.MustMarshal(map[string]any{"delete": map[string]any{"_id": id.String()}}))
+	for _, id := range ids {
+		cmds.Write(jsonx.MustMarshal(map[string]any{"delete": map[string]any{"_id": id}}))
 		cmds.WriteString("\n")
 	}
 
-	resp, err := rt.ES.Client.Bulk().Index(rt.Config.ElasticContactsIndexV2).Routing(orgID.String()).Raw(bytes.NewReader(cmds.Bytes())).Do(ctx)
+	resp, err := rt.ES.Client.Bulk().Index(rt.Config.ElasticContactsIndex).Routing(orgID.String()).Raw(bytes.NewReader(cmds.Bytes())).Do(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("error deindexing deleted contacts from elastic: %w", err)
 	}
@@ -197,12 +205,16 @@ func DeindexContactsByID(ctx context.Context, rt *runtime.Runtime, orgID models.
 
 // DeindexContactsByOrg de-indexes all contacts in the given org from Elastic
 func DeindexContactsByOrg(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, limit int) (int, error) {
+	if isNanorpMode(rt) {
+		return 0, nil
+	}
+
 	src := map[string]any{
 		"query":    elastic.Term("org_id", orgID),
 		"max_docs": limit,
 	}
 
-	resp, err := rt.ES.Client.DeleteByQuery(rt.Config.ElasticContactsIndexV2).Routing(orgID.String()).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
+	resp, err := rt.ES.Client.DeleteByQuery(rt.Config.ElasticContactsIndex).Routing(orgID.String()).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("error deindexing contacts in org #%d from elastic: %w", orgID, err)
 	}
