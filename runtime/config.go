@@ -50,13 +50,11 @@ type Config struct {
 	MaxSprintsPerSession int      `help:"the maximum number of sprints allowed per engine session"`
 	MaxValueLength       int      `help:"the maximum size in characters for contact field values and run result values"`
 
-	Elastic              string `validate:"url" help:"the URL of your ElasticSearch instance"`
+	Elastic              string `validate:"omitempty,url" help:"the URL of your ElasticSearch instance"`
 	ElasticUsername      string `help:"the username for ElasticSearch if using basic auth"`
 	ElasticPassword      string `help:"the password for ElasticSearch if using basic auth"`
-	ElasticContactsIndex       string  `help:"the name of index alias for contacts"`
-	ElasticContactsIndexV2     string  `help:"the name of the v2 contacts index written by mailroom"`
-	ElasticContactsV2Verify    bool    `help:"whether to also run contact searches against the v2 index for comparison"`
-	ElasticMessagesIndex       string  `help:"the base name for monthly message indexes (e.g. messages-v2 -> messages-v2-2026-02)"`
+	ElasticContactsIndex string `help:"the name of the contacts index written by mailroom"`
+	ElasticMessagesIndex string `help:"the base name for monthly message indexes (e.g. messages-v1 -> messages-v1-2026-02)"`
 
 	AWSAccessKeyID     string `help:"access key ID to use for AWS services"`
 	AWSSecretAccessKey string `help:"secret access key to use for AWS services"`
@@ -69,10 +67,14 @@ type Config struct {
 	S3AttachmentsBucket string `help:"S3 bucket to write attachments to"`
 	S3PathStyle         bool   `help:"S3 should use path style URLs"`
 
+	LatencyExcludedOrgs []int  `help:"comma separated list of org IDs to exclude from latency metrics"`
 	MetricsReporting    string `validate:"eq=off|eq=basic|eq=advanced"     help:"the level of metrics reporting"`
 	CloudwatchNamespace string `help:"the namespace to use for cloudwatch metrics"`
 	DeploymentID        string `help:"the deployment identifier to use for metrics"`
 	InstanceID          string `help:"the instance identifier to use for metrics"`
+
+	CentrifugoEndpoint string `help:"the endpoint of the Centrifugo server"`
+	CentrifugoKey      string `help:"the API key for the Centrifugo server"`
 
 	CourierAuthToken       string `help:"the authentication token used for requests to Courier"`
 	AndroidCredentialsFile string `help:"path to JSON file with FCM service account credentials used to sync Android relayers"`
@@ -106,7 +108,7 @@ func NewDefaultConfig() *Config {
 
 		Address:  "localhost",
 		Port:     8090,
-		SpoolDir: "/var/spool/mailroom",
+		SpoolDir: "./_spool",
 
 		WorkersRealtime:  32,
 		WorkersBatch:     8,
@@ -123,19 +125,18 @@ func NewDefaultConfig() *Config {
 		MaxSprintsPerSession: 250,
 		MaxValueLength:       640,
 
-		Elastic:              "http://elastic:9200",
+		Elastic:              "",
 		ElasticUsername:      "",
 		ElasticPassword:      "",
-		ElasticContactsIndex:   "contacts",
-		ElasticContactsIndexV2: "contacts-v2",
-		ElasticMessagesIndex:   "messages-v1",
+		ElasticContactsIndex: "contacts-v1",
+		ElasticMessagesIndex: "messages-v1",
 
 		AWSAccessKeyID:     "",
 		AWSSecretAccessKey: "",
 		AWSRegion:          "us-east-1",
 
 		DynamoEndpoint:    "", // let library generate it
-		DynamoTablePrefix: "Temba",
+		DynamoTablePrefix: "",
 
 		S3Endpoint:          "https://s3.amazonaws.com",
 		S3AttachmentsBucket: "temba-attachments",
