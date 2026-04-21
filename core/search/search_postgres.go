@@ -111,21 +111,17 @@ func (c *SQLConverter) convertCondition(cond *contactql.Condition) (string, erro
 			}
 
 			// Group condition: c.id IN (SELECT contact_id FROM contacts_contactgroup_contacts WHERE contactgroup_id = $N)
-			group := cond.ValueAsGroup(nil)
-			if group == nil {
-				// We actually don't have resolver here in the same way, but oa has groups
-				var groupID int64
-				groups, _ := c.oa.Groups()
-				for _, g := range groups {
-					if strings.EqualFold(g.Name(), cond.Value()) {
-						groupID = int64(g.(*models.Group).ID())
-						break
-					}
+			// Resolve group by name via OrgAssets (ValueAsGroup requires a non-nil Resolver
+			// which we don't have in the PostgreSQL path — calling it with nil panics).
+			var groupID int64
+			groups, _ := c.oa.Groups()
+			for _, g := range groups {
+				if strings.EqualFold(g.Name(), cond.Value()) {
+					groupID = int64(g.(*models.Group).ID())
+					break
 				}
-				c.args[len(c.args)-1] = groupID
-			} else {
-				c.args[len(c.args)-1] = group.(*models.Group).ID()
 			}
+			c.args[len(c.args)-1] = groupID
 			oper := "IN"
 			if cond.Operator() == contactql.OpNotEqual {
 				oper = "NOT IN"
