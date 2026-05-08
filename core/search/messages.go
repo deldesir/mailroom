@@ -9,7 +9,9 @@ import (
 
 	"github.com/nyaruka/gocommon/aws/dynamo"
 	"github.com/nyaruka/gocommon/dates"
+	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/gocommon/jsonx"
+	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
@@ -26,14 +28,20 @@ type MessageDoc struct {
 	UUID        flows.EventUUID   `json:"-"`          // used as _id
 	OrgID       models.OrgID      `json:"org_id"`
 	ContactUUID flows.ContactUUID `json:"contact_uuid"`
+	URNPath     string            `json:"urn_path,omitempty"`
 	Text        string            `json:"text"`
 	InTicket    bool              `json:"in_ticket"`
 }
 
-// IndexName returns the monthly index name for this message, e.g. base "messages" with a message
-// from January 2026 gives "messages-2026-01".
+// MessagesIndexName returns the monthly messages index name for the given base and time, e.g. base
+// "messages" with a time in January 2026 gives "messages-2026-01".
+func MessagesIndexName(base string, t time.Time) string {
+	return fmt.Sprintf("%s-%s", base, t.UTC().Format("2006-01"))
+}
+
+// IndexName returns the monthly index name for this message.
 func (m *MessageDoc) IndexName(base string) string {
-	return fmt.Sprintf("%s-%s", base, m.CreatedOn.UTC().Format("2006-01"))
+	return MessagesIndexName(base, m.CreatedOn)
 }
 
 // MessageResult is a single result from a message search containing the contact UUID and event data.
@@ -105,18 +113,6 @@ func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID
 		hits[i] = hitResult{uuid: flows.EventUUID(*hit.Id_), contactUUID: doc.ContactUUID}
 	}
 
-	// nanoRP mode: if DynamoDB is disabled, return results with basic data only
-	if rt.Dynamo.Client() == nil {
-		msgResults := make([]MessageResult, 0, len(hits))
-		for _, hit := range hits {
-			msgResults = append(msgResults, MessageResult{
-				ContactUUID: hit.contactUUID,
-				Event:       map[string]any{"uuid": string(hit.uuid)},
-			})
-		}
-		return msgResults, nil
-	}
-
 	// build DynamoDB keys from Elasticsearch results
 	keys := make([]dynamo.Key, len(hits))
 	for i, hit := range hits {
@@ -127,7 +123,7 @@ func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID
 	}
 
 	// batch fetch events from DynamoDB
-	items, _, err := dynamo.BatchGetItem(ctx, rt.Dynamo.Client(), rt.Config.DynamoTablePrefix+"History", keys)
+	items, _, err := dynamo.BatchGetItem(ctx, rt.Dynamo.History.Client(), rt.Dynamo.History.Table(), keys)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching events from DynamoDB: %w", err)
 	}
@@ -159,58 +155,53 @@ func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID
 	return msgResults, nil
 }
 
-// DeindexMessages deletes specific messages from the Elasticsearch messages index by their UUIDs.
-func DeindexMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, msgUUIDs []flows.EventUUID) (int, error) {
+// DeindexMessages queues deletes for the given messages on the Elasticsearch writer. The monthly index
+// for each message is derived from its v7 UUID timestamp.
+func DeindexMessages(rt *runtime.Runtime, orgID models.OrgID, msgUUIDs []flows.EventUUID) error {
 	if isNanorpMode(rt) {
-		return 0, nil
+		return nil
 	}
 
 	routing := fmt.Sprintf("%d", orgID)
-	uuids := make([]string, len(msgUUIDs))
-	for i, u := range msgUUIDs {
-		uuids[i] = string(u)
+	for _, u := range msgUUIDs {
+		t, err := uuids.V7Time(uuids.UUID(u))
+		if err != nil {
+			return fmt.Errorf("invalid message UUID %s: %w", u, err)
+		}
+		rt.ES.Writer.Queue(&elastic.Document{
+			Action:  elastic.ActionDelete,
+			Index:   MessagesIndexName(rt.Config.ElasticMessagesIndex, t),
+			ID:      string(u),
+			Routing: routing,
+		})
 	}
-
-	src := map[string]any{
-		"query": map[string]any{
-			"ids": map[string]any{"values": uuids},
-		},
-	}
-
-	index := rt.Config.ElasticMessagesIndex + "-*"
-
-	resp, err := rt.ES.Client.DeleteByQuery(index).Routing(routing).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("error deindexing messages in org #%d: %w", orgID, err)
-	}
-
-	return int(*resp.Deleted), nil
+	return nil
 }
 
 // DeindexMessagesByContact deletes all messages in the Elasticsearch messages index for the given contact UUIDs.
-func DeindexMessagesByContact(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []flows.ContactUUID) (int, error) {
+func DeindexMessagesByContact(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []flows.ContactUUID) error {
 	if isNanorpMode(rt) {
-		return 0, nil
+		return nil
 	}
 
 	routing := fmt.Sprintf("%d", orgID)
-	uuids := make([]string, len(contactUUIDs))
+	ids := make([]string, len(contactUUIDs))
 	for i, u := range contactUUIDs {
-		uuids[i] = string(u)
+		ids[i] = string(u)
 	}
 
 	src := map[string]any{
 		"query": map[string]any{
-			"terms": map[string]any{"contact_uuid": uuids},
+			"terms": map[string]any{"contact_uuid": ids},
 		},
 	}
 
 	index := rt.Config.ElasticMessagesIndex + "-*"
 
-	resp, err := rt.ES.Client.DeleteByQuery(index).Routing(routing).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
+	_, err := rt.ES.Client.DeleteByQuery(index).Routing(routing).Raw(bytes.NewReader(jsonx.MustMarshal(src))).WaitForCompletion(false).Do(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("error deindexing messages for contacts in org #%d: %w", orgID, err)
+		return fmt.Errorf("error deindexing messages for contacts in org #%d: %w", orgID, err)
 	}
 
-	return int(*resp.Deleted), nil
+	return nil
 }

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/operationtype"
+	"github.com/elastic/go-elasticsearch/v9/typedapi/types/enums/operationtype"
 	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
@@ -170,7 +170,6 @@ func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsset
 
 	return nil
 }
-
 // DeindexContactsByUUID de-indexes the contacts with the given UUIDs from Elastic
 func DeindexContactsByUUID(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []flows.ContactUUID) (int, error) {
 	if isNanorpMode(rt) {

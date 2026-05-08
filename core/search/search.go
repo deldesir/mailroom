@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	"github.com/elastic/go-elasticsearch/v9/typedapi/types"
 	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/goflow/assets"
@@ -129,14 +128,20 @@ func GetContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *m
 		group = nil
 	}
 
+	conv := newConverter(oa, true)
+	fieldSort, err := conv.Sort(sort, oa.SessionAssets())
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("error parsing sort: %w", err)
+	}
+
 	// nanorp: use Postgres fallback when ES is disabled
 	if isNanorpMode(rt) {
 		var sortField string
 		var sortDesc bool
-		
+
 		// Map simple sort strings from "id", "-created_on" to Postgres column representations
 		if sort != "" {
-			if strings.HasPrefix(sort, "-") {
+			if sort[0] == '-' {
 				sortDesc = true
 				sortField = sort[1:]
 			} else {
@@ -147,16 +152,8 @@ func GetContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *m
 		slog.Debug("executing paged postgres local-first search override", "org_id", oa.OrgID())
 		starts := time.Now()
 		hits, total, postgresErr := GetContactUUIDsForQueryPagePostgres(ctx, rt, oa, group, status, excludeUUIDs, parsed, sortField, sortDesc, offset, pageSize)
-		if postgresErr == nil {
-			rt.Stats.RecordSearch("contacts", time.Since(starts))
-		}
+		rt.Stats.RecordSearch("contacts", time.Since(starts))
 		return parsed, hits, total, postgresErr
-	}
-
-	conv := newConverter(oa, true)
-	fieldSort, err := conv.Sort(sort, oa.SessionAssets())
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("error parsing sort: %w", err)
 	}
 
 	start := time.Now()

@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
-	"github.com/nyaruka/mailroom/core/ivr"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/tasks"
-	"github.com/nyaruka/mailroom/core/tasks/ctasks"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/core/ivr"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/tasks"
+	"github.com/nyaruka/mailroom/v26/core/tasks/ctasks"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -69,7 +69,7 @@ func TestMsgReceivedTask(t *testing.T) {
 	models.FlushCache()
 
 	// insert a dummy message into the database that will get the updates from handling each message event which pretends to be it
-	dbMsg := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "", models.MsgStatusPending)
+	dbMsg := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "", models.MsgStatusPending, "")
 
 	tcs := []struct {
 		preHook             func()
@@ -84,21 +84,21 @@ func TestMsgReceivedTask(t *testing.T) {
 	}{
 		{ // 0: no trigger match, inbox message
 			org:                testdb.Org1,
-			channel:            testdb.FacebookChannel,
+			channel:            testdb.TwilioChannel,
 			contact:            testdb.Ann,
 			text:               "noop",
 			expectedVisibility: models.VisibilityVisible,
 		},
 		{ // 1: no trigger match, inbox message (trigger is keyword only)
 			org:                testdb.Org1,
-			channel:            testdb.FacebookChannel,
+			channel:            testdb.TwilioChannel,
 			contact:            testdb.Ann,
 			text:               "start other",
 			expectedVisibility: models.VisibilityVisible,
 		},
 		{ // 2: keyword trigger match, flow message
 			org:                 testdb.Org1,
-			channel:             testdb.FacebookChannel,
+			channel:             testdb.TwilioChannel,
 			contact:             testdb.Ann,
 			text:                "start",
 			expectedVisibility:  models.VisibilityVisible,
@@ -108,7 +108,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		},
 		{ // 3:
 			org:                 testdb.Org1,
-			channel:             testdb.FacebookChannel,
+			channel:             testdb.TwilioChannel,
 			contact:             testdb.Ann,
 			text:                "purple",
 			expectedVisibility:  models.VisibilityVisible,
@@ -118,7 +118,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		},
 		{ // 4:
 			org:                 testdb.Org1,
-			channel:             testdb.FacebookChannel,
+			channel:             testdb.TwilioChannel,
 			contact:             testdb.Ann,
 			text:                "blue",
 			expectedVisibility:  models.VisibilityVisible,
@@ -128,7 +128,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		},
 		{ // 5:
 			org:                 testdb.Org1,
-			channel:             testdb.FacebookChannel,
+			channel:             testdb.TwilioChannel,
 			contact:             testdb.Ann,
 			text:                "MUTZIG",
 			expectedVisibility:  models.VisibilityVisible,
@@ -138,7 +138,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		},
 		{ // 6:
 			org:                 testdb.Org1,
-			channel:             testdb.FacebookChannel,
+			channel:             testdb.TwilioChannel,
 			contact:             testdb.Ann,
 			text:                "Ann",
 			expectedVisibility:  models.VisibilityVisible,
@@ -148,7 +148,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		},
 		{ // 7:
 			org:                testdb.Org1,
-			channel:            testdb.FacebookChannel,
+			channel:            testdb.TwilioChannel,
 			contact:            testdb.Ann,
 			text:               "noop",
 			expectedVisibility: models.VisibilityVisible,
@@ -215,7 +215,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		},
 		{ // 14:
 			org:                testdb.Org1,
-			channel:            testdb.FacebookChannel,
+			channel:            testdb.TwilioChannel,
 			contact:            testdb.Bob,
 			text:               "ivr",
 			expectedVisibility: models.VisibilityVisible,
@@ -225,7 +225,7 @@ func TestMsgReceivedTask(t *testing.T) {
 				rt.DB.MustExec(`UPDATE contacts_contact SET status = 'S' WHERE id = $1`, testdb.Cat.ID)
 			},
 			org:                 testdb.Org1,
-			channel:             testdb.FacebookChannel,
+			channel:             testdb.TwilioChannel,
 			contact:             testdb.Cat,
 			text:                "start",
 			expectedVisibility:  models.VisibilityVisible,
@@ -287,7 +287,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		},
 		{ // 21: blocked contact
 			org:                testdb.Org1,
-			channel:            testdb.FacebookChannel,
+			channel:            testdb.TwilioChannel,
 			contact:            blocked,
 			text:               "start",
 			expectedVisibility: models.VisibilityArchived,
@@ -383,8 +383,8 @@ func TestMsgReceivedTask(t *testing.T) {
 
 	// check messages queued to courier
 	testsuite.AssertCourierQueues(t, rt, map[string][]int{
-		fmt.Sprintf("msgs:%s|10/1", testdb.FacebookChannel.UUID): {1, 1, 1, 1, 1, 1},
-		fmt.Sprintf("msgs:%s|10/1", testdb.Org2Channel.UUID):     {1, 1, 1, 1, 1, 1, 1, 1, 1},
+		fmt.Sprintf("msgs:%s|10/1", testdb.TwilioChannel.UUID): {1, 1, 1, 1, 1, 1},
+		fmt.Sprintf("msgs:%s|10/1", testdb.Org2Channel.UUID):   {1, 1, 1, 1, 1, 1, 1, 1, 1},
 	})
 
 	// Fred's sessions should not have a timeout because courier will set them
@@ -432,6 +432,116 @@ func TestMsgReceivedTask(t *testing.T) {
 	assert.NoError(t, err)
 
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE contact_id = $1 AND direction = 'O' AND created_on > $2`, testdb.Org2Contact.ID, previous).Returns(0)
+}
+
+func TestMsgReceivedNewURN(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetDynamo|testsuite.ResetElastic)
+
+	dbMsg := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Bob, "", models.MsgStatusPending, "")
+
+	type urnRow struct {
+		Identity  string            `db:"identity"`
+		ChannelID *models.ChannelID `db:"channel_id"`
+	}
+
+	tcs := []struct {
+		label       string
+		preHook     func()
+		contact     *testdb.Contact
+		channel     *testdb.Channel
+		newURN      *ctasks.NewURNSpec
+		expectedURN []urnRow
+	}{
+		{
+			label:   "append new URN saves channel affinity",
+			contact: testdb.Bob,
+			channel: testdb.TwilioChannel,
+			newURN: &ctasks.NewURNSpec{
+				Value:  "telegram:98765",
+				Action: "append",
+			},
+			expectedURN: []urnRow{
+				{Identity: "tel:+16055742222", ChannelID: &testdb.TwilioChannel.ID},
+				{Identity: "telegram:98765", ChannelID: &testdb.TwilioChannel.ID},
+			},
+		},
+		{
+			label: "append new bsuid URN saves channel affinity",
+			preHook: func() {
+				rt.DB.MustExec(`DELETE FROM contacts_contacturn WHERE contact_id = $1 AND scheme = 'telegram'`, testdb.Bob.ID)
+			},
+			contact: testdb.Bob,
+			channel: testdb.TwilioChannel,
+			newURN: &ctasks.NewURNSpec{
+				Value:  "bsuid:US.ABC123",
+				Action: "append",
+			},
+			expectedURN: []urnRow{
+				{Identity: "tel:+16055742222", ChannelID: &testdb.TwilioChannel.ID},
+				{Identity: "bsuid:US.ABC123", ChannelID: &testdb.TwilioChannel.ID},
+			},
+		},
+		{
+			label: "append dedup existing URN",
+			preHook: func() {
+				// reset Bob's URNs to original state
+				rt.DB.MustExec(`DELETE FROM contacts_contacturn WHERE contact_id = $1 AND scheme IN ('telegram', 'bsuid')`, testdb.Bob.ID)
+				testdb.InsertContactURN(t, rt, testdb.Org1, testdb.Bob, "telegram:98765", 999, nil)
+			},
+			contact: testdb.Bob,
+			channel: testdb.TwilioChannel,
+			newURN: &ctasks.NewURNSpec{
+				Value:  "telegram:98765",
+				Action: "append",
+			},
+			// telegram URN already existed without a channel, stays unchanged
+			expectedURN: []urnRow{
+				{Identity: "tel:+16055742222", ChannelID: &testdb.TwilioChannel.ID},
+				{Identity: "telegram:98765", ChannelID: nil},
+			},
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.label, func(t *testing.T) {
+			models.FlushCache()
+
+			if tc.preHook != nil {
+				tc.preHook()
+			}
+
+			rt.DB.MustExec(`UPDATE msgs_msg SET status = 'P', flow_id = NULL WHERE id = $1`, dbMsg.ID)
+
+			task := &ctasks.MsgReceived{
+				ChannelID: tc.channel.ID,
+				MsgUUID:   dbMsg.UUID,
+				URN:       tc.contact.URN,
+				URNID:     tc.contact.URNID,
+				Text:      "hello",
+				NewURN:    tc.newURN,
+			}
+
+			err := tasks.QueueContact(ctx, rt, testdb.Org1.ID, tc.contact.ID, task)
+			require.NoError(t, err)
+
+			queued, err := rt.Queues.Realtime.Pop(ctx, vc)
+			require.NoError(t, err)
+			require.NotNil(t, queued)
+
+			err = tasks.Perform(ctx, rt, queued)
+			require.NoError(t, err)
+
+			// verify URN order and channel affinity
+			var urnRows []urnRow
+			err = rt.DB.Select(&urnRows, `SELECT identity, channel_id FROM contacts_contacturn WHERE contact_id = $1 ORDER BY priority DESC`, tc.contact.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedURN, urnRows)
+		})
+	}
 }
 
 func getLastSeenOn(t *testing.T, rt *runtime.Runtime, c *testdb.Contact) *time.Time {

@@ -3,13 +3,13 @@ package handlers
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/flows/events"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/runner"
-	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/runner"
+	"github.com/nyaruka/mailroom/v26/core/runner/hooks"
+	"github.com/nyaruka/mailroom/v26/runtime"
 )
 
 func init() {
@@ -24,7 +24,7 @@ func handleLLMCalled(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAss
 	llm := oa.SessionAssets().LLMs().Get(event.LLM.UUID)
 	if llm != nil {
 		m := llm.Asset().(*models.LLM)
-		m.RecordCall(rt, time.Duration(event.ElapsedMS)*time.Millisecond, event.TokensUsed)
+		scene.AttachPreCommitHook(hooks.InsertLLMDailyCounts, m.RecordCall(rt, oa, event))
 	}
 
 	return nil

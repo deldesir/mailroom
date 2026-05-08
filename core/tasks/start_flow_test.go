@@ -4,12 +4,12 @@ import (
 	"testing"
 
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
-	"github.com/nyaruka/mailroom/core/models"
-	_ "github.com/nyaruka/mailroom/core/runner/handlers"
-	"github.com/nyaruka/mailroom/core/tasks"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
-	"github.com/nyaruka/mailroom/utils/queues"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	_ "github.com/nyaruka/mailroom/v26/core/runner/handlers"
+	"github.com/nyaruka/mailroom/v26/core/tasks"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/utils/queues"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -205,7 +205,7 @@ func TestStartFlowTask(t *testing.T) {
 	}
 
 	for i, tc := range tcs {
-		testsuite.ReindexElastic(t, rt)
+		testsuite.IndexContacts(t, rt)
 
 		// handle our start task
 		start := models.NewFlowStart(testdb.Org1.ID, models.StartTypeManual, tc.flowID).
