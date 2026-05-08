@@ -53,6 +53,10 @@ type MessageResult struct {
 // SearchMessages searches the Elasticsearch messages index for messages matching the given text in the given org,
 // then fetches the corresponding events from DynamoDB.
 func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID flows.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
+	if isNanorpMode(rt) {
+		return SearchMessagesPostgres(ctx, rt, orgID, text, contactUUID, inTicket, limit)
+	}
+
 	routing := fmt.Sprintf("%d", orgID)
 
 	filter := []map[string]any{
@@ -154,6 +158,10 @@ func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID
 // DeindexMessages queues deletes for the given messages on the Elasticsearch writer. The monthly index
 // for each message is derived from its v7 UUID timestamp.
 func DeindexMessages(rt *runtime.Runtime, orgID models.OrgID, msgUUIDs []flows.EventUUID) error {
+	if isNanorpMode(rt) {
+		return nil
+	}
+
 	routing := fmt.Sprintf("%d", orgID)
 	for _, u := range msgUUIDs {
 		t, err := uuids.V7Time(uuids.UUID(u))
@@ -172,6 +180,10 @@ func DeindexMessages(rt *runtime.Runtime, orgID models.OrgID, msgUUIDs []flows.E
 
 // DeindexMessagesByContact deletes all messages in the Elasticsearch messages index for the given contact UUIDs.
 func DeindexMessagesByContact(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []flows.ContactUUID) error {
+	if isNanorpMode(rt) {
+		return nil
+	}
+
 	routing := fmt.Sprintf("%d", orgID)
 	ids := make([]string, len(contactUUIDs))
 	for i, u := range contactUUIDs {

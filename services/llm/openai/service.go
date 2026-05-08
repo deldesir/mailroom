@@ -18,13 +18,16 @@ import (
 )
 
 const (
-	TypeOpenAI = "openai"
+	TypeOpenAI   = "openai"
+	TypeCustomAI = "custom_ai"
 
-	configAPIKey = "api_key"
+	configAPIKey   = "api_key"
+	configEndpoint = "endpoint"
 )
 
 func init() {
 	models.RegisterLLMService(TypeOpenAI, New)
+	models.RegisterLLMService(TypeCustomAI, New)
 }
 
 // an LLM service implementation for OpenAI
@@ -39,8 +42,17 @@ func New(rt *runtime.Runtime, m *models.LLM, c *http.Client) (flows.LLMService, 
 		return nil, fmt.Errorf("config incomplete for LLM: %s", m.UUID())
 	}
 
+	opts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithHTTPClient(c),
+	}
+
+	if endpoint := m.Config().GetString(configEndpoint, ""); endpoint != "" {
+		opts = append(opts, option.WithBaseURL(endpoint))
+	}
+
 	return &service{
-		client: openai.NewClient(option.WithAPIKey(apiKey), option.WithHTTPClient(c)),
+		client: openai.NewClient(opts...),
 		model:  m.Model(),
 	}, nil
 }
