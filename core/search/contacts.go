@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/operationtype"
+	"github.com/elastic/go-elasticsearch/v9/typedapi/types/enums/operationtype"
 	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
@@ -136,7 +136,7 @@ func NewContactDoc(oa *models.OrgAssets, c *flows.Contact, currentFlowID models.
 
 // IndexContacts builds contact documents and queues them for indexing in Elastic.
 func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, flowContacts []*flows.Contact, currentFlows map[models.ContactID]models.FlowID) error {
-	if len(flowContacts) == 0 || isNanorpMode(rt) {
+	if len(flowContacts) == 0 {
 		return nil
 	}
 
@@ -173,10 +173,6 @@ func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsset
 
 // DeindexContactsByUUID de-indexes the contacts with the given UUIDs from Elastic
 func DeindexContactsByUUID(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []flows.ContactUUID) (int, error) {
-	if isNanorpMode(rt) {
-		return 0, nil
-	}
-
 	ids := make([]string, len(contactUUIDs))
 	for i, uuid := range contactUUIDs {
 		ids[i] = string(uuid)
@@ -205,10 +201,6 @@ func DeindexContactsByUUID(ctx context.Context, rt *runtime.Runtime, orgID model
 
 // DeindexContactsByOrg de-indexes all contacts in the given org from Elastic
 func DeindexContactsByOrg(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, limit int) (int, error) {
-	if isNanorpMode(rt) {
-		return 0, nil
-	}
-
 	src := map[string]any{
 		"query":    elastic.Term("org_id", orgID),
 		"max_docs": limit,

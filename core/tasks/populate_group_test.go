@@ -6,11 +6,11 @@ import (
 
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
-	"github.com/nyaruka/mailroom/core/models"
-	_ "github.com/nyaruka/mailroom/core/runner/handlers"
-	"github.com/nyaruka/mailroom/core/tasks"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	_ "github.com/nyaruka/mailroom/v26/core/runner/handlers"
+	"github.com/nyaruka/mailroom/v26/core/tasks"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +32,7 @@ func TestPopulateGroupTask(t *testing.T) {
 		testdb.Ann.ID,
 	)
 
-	testsuite.ReindexElastic(t, rt)
+	testsuite.IndexContacts(t, rt)
 
 	// reload org assets to include new groups and campaign
 	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshGroups|models.RefreshCampaigns)

@@ -5,10 +5,10 @@ import (
 	"testing"
 
 	"github.com/nyaruka/gocommon/httpx"
-	"github.com/nyaruka/mailroom/core/ai"
-	"github.com/nyaruka/mailroom/services/llm/openai"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/core/ai"
+	"github.com/nyaruka/mailroom/v26/services/llm/openai"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,8 +17,8 @@ func TestService(t *testing.T) {
 
 	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
-	bad := testdb.InsertLLM(t, rt, testdb.Org1, "c69723d8-fb37-4cf6-9ec4-bc40cb36f2cc", "openai", "gpt-4", "Bad Config", map[string]any{})
-	good := testdb.InsertLLM(t, rt, testdb.Org1, "b86966fd-206e-4bdd-a962-06faa3af1182", "openai", "gpt-4", "Good", map[string]any{"api_key": "sesame"})
+	bad := testdb.InsertLLM(t, rt, testdb.Org1, "c69723d8-fb37-4cf6-9ec4-bc40cb36f2cc", "openai", "gpt-4", "Bad Config", map[string]any{}, "TF")
+	good := testdb.InsertLLM(t, rt, testdb.Org1, "b86966fd-206e-4bdd-a962-06faa3af1182", "openai", "gpt-4", "Good", map[string]any{"api_key": "sesame"}, "TF")
 
 	oa := testdb.Org1.Load(t, rt)
 	badLLM := oa.LLMByID(bad.ID)
@@ -86,11 +86,11 @@ func TestService(t *testing.T) {
 	})}
 
 	// can't create service with bad config
-	svc, err := openai.New(badLLM, client)
+	svc, err := openai.New(rt, badLLM, client)
 	assert.EqualError(t, err, "config incomplete for LLM: c69723d8-fb37-4cf6-9ec4-bc40cb36f2cc")
 	assert.Nil(t, svc)
 
-	svc, err = openai.New(goodLLM, client)
+	svc, err = openai.New(rt, goodLLM, client)
 	assert.NoError(t, err)
 	assert.NotNil(t, svc)
 
@@ -112,5 +112,6 @@ func TestService(t *testing.T) {
 	resp, err = svc.Response(ctx, "translate to Spanish", "Hello world", 1000)
 	assert.NoError(t, err)
 	assert.Equal(t, "Hola mundo", resp.Output)
-	assert.Equal(t, int64(123), resp.TokensUsed)
+	assert.Equal(t, int64(36), resp.TokensInput)
+	assert.Equal(t, int64(87), resp.TokensOutput)
 }

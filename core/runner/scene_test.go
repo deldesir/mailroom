@@ -16,11 +16,11 @@ import (
 	"github.com/nyaruka/goflow/flows/resumes"
 	"github.com/nyaruka/goflow/flows/triggers"
 	"github.com/nyaruka/goflow/test"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/runner"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/runner"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/nyaruka/vkutil/assertvk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,7 +99,7 @@ func TestSessionCreationAndUpdating(t *testing.T) {
 
 	// check we have a new contact fire for wait expiration but not timeout (wait doesn't have a timeout)
 	testsuite.AssertContactFires(t, rt, testdb.Bob.ID, map[string]time.Time{
-		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 45, 0, time.UTC), // updated
+		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 43, 0, time.UTC), // updated
 		fmt.Sprintf("S:%s", scBob.Session.UUID()): time.Date(2025, 3, 28, 9, 55, 36, 0, time.UTC),  // unchanged
 	})
 
@@ -407,7 +407,7 @@ func TestResumeSession(t *testing.T) {
 			expectedStatus:      models.SessionStatusWaiting,
 			expectedCurrentFlow: string(flow.UUID()),
 			expectedRunStatus:   models.RunStatusWaiting,
-			expectedNodeUUID:    "48f2ecb3-8e8e-4f7b-9510-1ee08bd6a434",
+			expectedNodeUUID:    "e61f4173-732f-48bb-a767-05899e15f03b",
 			expectedMsgOut:      "Good choice, I like Red too! What is your favorite beer?",
 			expectedPathLength:  4,
 		},
@@ -416,7 +416,7 @@ func TestResumeSession(t *testing.T) {
 			expectedStatus:      models.SessionStatusWaiting,
 			expectedCurrentFlow: string(flow.UUID()),
 			expectedRunStatus:   models.RunStatusWaiting,
-			expectedNodeUUID:    "a84399b1-0e7b-42ee-8759-473137b510db",
+			expectedNodeUUID:    "bd5996af-4fc0-4ff3-bb77-1ffd50faac7b",
 			expectedMsgOut:      "Mmmmm... delicious Mutzig. If only they made red Mutzig! Lastly, what is your name?",
 			expectedPathLength:  6,
 		},

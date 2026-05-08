@@ -2,46 +2,61 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/nyaruka/gocommon/i18n"
-	"github.com/nyaruka/mailroom/core/ai"
-	"github.com/nyaruka/mailroom/core/ai/prompts"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/web"
+	"github.com/nyaruka/goflow/assets"
+	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/flows/events"
+	"github.com/nyaruka/mailroom/v26/core/ai"
+	"github.com/nyaruka/mailroom/v26/core/ai/prompts"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/web"
 )
 
 func init() {
 	web.InternalRoute(http.MethodPost, "/llm/translate", web.JSONPayload(handleTranslate))
 }
 
-// Performs translation using an LLM.
+// Performs batch translation using an LLM. Items is a map keyed by a
+// caller-supplied opaque id; each entry holds the array of strings to
+// translate together. The id is passed through to the LLM as the key of a
+// JSON object so the prompt can key off its suffix (":text", ":quick_replies",
+// ":arguments") for context-dependent rules.
 //
 //	{
 //	  "org_id": 1,
 //	  "llm_id": 1234,
-//	  "from_language": "eng",
-//	  "to_language": "spa",
-//	  "text": "Hello world"
+//	  "source": "eng",
+//	  "target": "spa",
+//	  "items": {
+//	    "a1f0e2c4-...:text":          ["Hi @contact.name"],
+//	    "a1f0e2c4-...:quick_replies": ["Yes", "No"],
+//	    "b7d91a22-...:arguments":     ["yes yeah"]
+//	  }
 //	}
 type translateRequest struct {
-	OrgID        models.OrgID  `json:"org_id"        validate:"required"`
-	LLMID        models.LLMID  `json:"llm_id"        validate:"required"`
-	FromLanguage i18n.Language `json:"from_language" validate:"required"`
-	ToLanguage   i18n.Language `json:"to_language"   validate:"required"`
-	Text         string        `json:"text"          validate:"required"`
+	OrgID  models.OrgID        `json:"org_id" validate:"required"`
+	LLMID  models.LLMID        `json:"llm_id" validate:"required"`
+	Source i18n.Language       `json:"source" validate:"required"`
+	Target i18n.Language       `json:"target" validate:"required"`
+	Items  map[string][]string `json:"items"  validate:"required,min=1"`
 }
 
 //	{
-//	  "text": "Hola mundo",
-//	  "tokens_used": 123
+//	  "items": {
+//	    "a1f0e2c4-...:text": ["Hola @contact.name"]
+//	  }
 //	}
 type translateResponse struct {
-	Text       string `json:"text"`
-	TokensUsed int64  `json:"tokens_used,omitempty"`
+	Items map[string][]string `json:"items"`
 }
 
 func handleTranslate(ctx context.Context, rt *runtime.Runtime, r *translateRequest) (any, int, error) {
@@ -54,30 +69,87 @@ func handleTranslate(ctx context.Context, rt *runtime.Runtime, r *translateReque
 	if llm == nil {
 		return nil, 0, fmt.Errorf("no such LLM with ID %d", r.LLMID)
 	}
+	if !slices.Contains(llm.Roles(), assets.LLMRoleEditing) {
+		return nil, 0, fmt.Errorf("LLM with ID %d does not support editing", r.LLMID)
+	}
 
-	llmSvc, err := llm.AsService(http.DefaultClient)
+	llmSvc, err := llm.AsService(rt, http.DefaultClient)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error creating LLM service: %w", err)
 	}
 
 	instructionsTpl := "translate"
-	if r.FromLanguage == "und" || r.FromLanguage == "mul" {
+	if r.Source == "und" || r.Source == "mul" {
 		instructionsTpl = "translate_unknown_from"
 	}
-
 	instructions := prompts.Render(instructionsTpl, r)
-	start := time.Now()
 
-	resp, err := llmSvc.Response(ctx, instructions, r.Text, 2500)
+	inputBytes, err := json.Marshal(r.Items)
 	if err != nil {
-		return nil, 0, fmt.Errorf("error calling LLM service: %w", err)
+		return nil, 0, fmt.Errorf("error marshaling input: %w", err)
 	}
 
-	llm.RecordCall(rt, time.Since(start), resp.TokensUsed)
+	callStart := time.Now()
+	resp, err := llmSvc.Response(ctx, instructions, string(inputBytes), llm.MaxOutputTokens())
+	if resp == nil {
+		resp = &flows.LLMResponse{}
+	}
+	counts := llm.RecordCall(rt, oa, events.NewLLMCalled(flows.NewLLM(llm), instructions, string(inputBytes), resp, time.Since(callStart)))
+	if rerr := insertLLMCallCounts(ctx, rt, counts); rerr != nil {
+		slog.Error("error recording llm call", "error", rerr, "llm_id", r.LLMID)
+	}
 
+	// An error from the LLM service itself (bad credentials, rate limit, model unavailable, etc.)
+	// is reported as 422 because LLMs are user-configured — it's not necessarily our fault.
+	if err != nil {
+		// context cancellation/deadline is a client/timeout issue, not an LLM config failure
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, 0, err
+		}
+		// real LLM services wrap their errors as *ai.ServiceError already; wrap anything else
+		// (e.g. from the test service) so the handler response is consistently a 422.
+		var aerr *ai.ServiceError
+		if !errors.As(err, &aerr) {
+			err = &ai.ServiceError{Message: err.Error(), Code: ai.ErrorUnknown}
+		}
+		return nil, 0, err
+	}
+
+	// A <CANT> response or anything unparseable means nothing was translatable;
+	// return an empty items map. The LLM can also signal per-item untranslatability
+	// by returning "<CANT>" in place of an individual string or by omitting the key
+	// entirely — either drops that whole key from the response.
+	items := make(map[string][]string)
 	if resp.Output == "<CANT>" {
-		return nil, 0, &ai.ServiceError{Message: "unable to perform translation", Code: ai.ErrorReasoning, Instructions: instructions, Input: r.Text}
+		return translateResponse{Items: items}, http.StatusOK, nil
 	}
 
-	return translateResponse{Text: resp.Output, TokensUsed: resp.TokensUsed}, http.StatusOK, nil
+	var translated map[string][]string
+	if err := json.Unmarshal([]byte(resp.Output), &translated); err != nil {
+		slog.Warn("translate: failed to parse LLM output", "error", err, "output", resp.Output, "llm_id", r.LLMID)
+		return translateResponse{Items: items}, http.StatusOK, nil
+	}
+
+	for id, vals := range r.Items {
+		tvals, ok := translated[id]
+		if !ok || len(tvals) != len(vals) || slices.Contains(tvals, "<CANT>") {
+			continue
+		}
+		items[id] = tvals
+	}
+
+	return translateResponse{Items: items}, http.StatusOK, nil
+}
+
+// insertLLMCallCounts inserts the given LLM daily counts in a transaction.
+func insertLLMCallCounts(ctx context.Context, rt *runtime.Runtime, counts []*models.LLMDailyCount) error {
+	tx, err := rt.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting transaction: %w", err)
+	}
+	if err := models.InsertLLMDailyCounts(ctx, tx, counts); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }

@@ -10,8 +10,13 @@ import (
 	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/jsonx"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/gocommon/urns"
+	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/flows/modifiers"
+	"github.com/nyaruka/goflow/utils"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/runner"
+	"github.com/nyaruka/mailroom/v26/runtime"
 )
 
 // Task is the interface for all contact tasks - tasks which operate on a single contact in real time
@@ -33,7 +38,7 @@ func ReadTask(type_ string, data []byte) (Task, error) {
 	}
 
 	t := fn()
-	return t, json.Unmarshal(data, t)
+	return t, utils.UnmarshalAndValidate(data, t)
 }
 
 // Payload wrapper for encoding a contact task
@@ -69,6 +74,26 @@ func Queue(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contact
 		return fmt.Errorf("error queuing contact task: %w", err)
 	}
 
+	return nil
+}
+
+// NewURNSpec describes a new URN to add to a contact
+type NewURNSpec struct {
+	Value  urns.URN `json:"value" validate:"required"`
+	Action string   `json:"action" validate:"required,eq=append"`
+}
+
+// Apply appends the new URN to the contact, recording channel affinity for the given channel if set.
+func (s *NewURNSpec) Apply(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, scene *runner.Scene, channel *models.Channel) error {
+	var flowCh *flows.Channel
+	if channel != nil {
+		flowCh = oa.SessionAssets().Channels().Get(channel.UUID())
+	}
+
+	mod := modifiers.NewRoutes([]flows.Route{{URN: s.Value, Channel: flowCh}}, modifiers.RoutesAppend)
+	if err := scene.ApplyModifier(ctx, rt, oa, mod, models.NilUserID, ""); err != nil {
+		return fmt.Errorf("error applying routes modifier: %w", err)
+	}
 	return nil
 }
 

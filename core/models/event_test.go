@@ -12,9 +12,9 @@ import (
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/flows/events"
 	"github.com/nyaruka/goflow/test"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/testsuite"
-	"github.com/nyaruka/mailroom/testsuite/testdb"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/testsuite"
+	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,7 +140,7 @@ func TestEventTags(t *testing.T) {
 	assert.Equal(t, "del", tag.Tag)
 	assert.Equal(t, map[string]any{
 		"created_on": time.Date(2025, time.May, 4, 12, 30, 45, 123456789, time.UTC),
-		"user":       map[string]any{"name": "Andy Admin", "uuid": assets.UserUUID("e29fdf9f-56ab-422a-b77d-e3ec26091a25")},
+		"user":       map[string]any{"name": "Andy Admin", "uuid": assets.UserUUID("ad9fdf9f-56ab-422a-b77d-e3ec26091a25")},
 	}, tag.Data)
 
 	tag = models.NewMsgDeletionTag(testdb.Org1.ID, testdb.Ann.UUID, "0197b335-6ded-79a4-95a6-3af85b57f108", true, nil)

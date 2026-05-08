@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/nyaruka/mailroom/core/tasks"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/utils/queues"
+	"github.com/nyaruka/mailroom/v26/core/tasks"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/utils/queues"
 )
 
 // Foreman takes care of managing our set of workers and assigns msgs for each to send
@@ -44,6 +44,11 @@ func NewForeman(rt *runtime.Runtime, q queues.Fair, maxWorkers int) *Foreman {
 
 // Start starts the foreman and all its workers, assigning jobs while there are some
 func (f *Foreman) Start(wg *sync.WaitGroup) {
+	if len(f.workers) == 0 {
+		slog.Info("foreman disabled, no workers configured", "foreman", f.queue)
+		return
+	}
+
 	for _, worker := range f.workers {
 		worker.Start(wg)
 	}
@@ -52,6 +57,10 @@ func (f *Foreman) Start(wg *sync.WaitGroup) {
 
 // Stop stops the foreman, waiting for assignment to finish. The workers notify on the main mailroom wait group when they are done.
 func (f *Foreman) Stop() {
+	if len(f.workers) == 0 {
+		return
+	}
+
 	// tell our assignment loop to stop
 	close(f.quit)
 

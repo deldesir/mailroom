@@ -12,12 +12,12 @@ import (
 	"github.com/nyaruka/goflow/flows/resumes"
 	"github.com/nyaruka/goflow/flows/triggers"
 	"github.com/nyaruka/goflow/utils"
-	"github.com/nyaruka/mailroom/core/ivr"
-	"github.com/nyaruka/mailroom/core/models"
-	"github.com/nyaruka/mailroom/core/msgio"
-	"github.com/nyaruka/mailroom/core/runner"
-	"github.com/nyaruka/mailroom/runtime"
-	"github.com/nyaruka/mailroom/utils/clogs"
+	"github.com/nyaruka/mailroom/v26/core/ivr"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/core/msgio"
+	"github.com/nyaruka/mailroom/v26/core/runner"
+	"github.com/nyaruka/mailroom/v26/runtime"
+	"github.com/nyaruka/mailroom/v26/utils/clogs"
 )
 
 const TypeMsgReceived = "msg_received"
@@ -35,6 +35,7 @@ type MsgReceived struct {
 	Text          string           `json:"text"`
 	Attachments   []string         `json:"attachments,omitempty"`
 	NewContact    bool             `json:"new_contact"`
+	NewURN        *NewURNSpec      `json:"new_urn,omitempty"`
 }
 
 func (t *MsgReceived) Type() string {
@@ -110,6 +111,13 @@ func (t *MsgReceived) perform(ctx context.Context, rt *runtime.Runtime, oa *mode
 		// if we get a message from a stopped contact, unstop them
 		if err := scene.ApplyModifier(ctx, rt, oa, modifiers.NewStatus(flows.ContactStatusActive), models.NilUserID, ""); err != nil {
 			return fmt.Errorf("error applying modifier to unstop contact: %w", err)
+		}
+	}
+
+	// if a new URN was specified, append it (with channel affinity) before affinity
+	if t.NewURN != nil {
+		if err := t.NewURN.Apply(ctx, rt, oa, scene, channel); err != nil {
+			return fmt.Errorf("error applying new URN: %w", err)
 		}
 	}
 

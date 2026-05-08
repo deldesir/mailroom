@@ -8,8 +8,9 @@ import (
 	"strings"
 
 	"github.com/nyaruka/goflow/flows"
-	"github.com/nyaruka/mailroom/core/ai"
-	"github.com/nyaruka/mailroom/core/models"
+	"github.com/nyaruka/mailroom/v26/core/ai"
+	"github.com/nyaruka/mailroom/v26/core/models"
+	"github.com/nyaruka/mailroom/v26/runtime"
 	"google.golang.org/genai"
 )
 
@@ -29,7 +30,7 @@ type service struct {
 	model  string
 }
 
-func New(m *models.LLM, c *http.Client) (flows.LLMService, error) {
+func New(rt *runtime.Runtime, m *models.LLM, c *http.Client) (flows.LLMService, error) {
 	apiKey := m.Config().GetString(configAPIKey, "")
 	if apiKey == "" {
 		return nil, fmt.Errorf("config incomplete for LLM: %s", m.UUID())
@@ -59,18 +60,19 @@ func (s *service) Response(ctx context.Context, instructions, input string, maxT
 	}
 
 	return &flows.LLMResponse{
-		Output:     strings.TrimSpace(resp.Text()),
-		TokensUsed: int64(resp.UsageMetadata.TotalTokenCount),
+		Output:       strings.TrimSpace(resp.Text()),
+		TokensInput:  int64(resp.UsageMetadata.PromptTokenCount),
+		TokensOutput: int64(resp.UsageMetadata.CandidatesTokenCount),
 	}, nil
 }
 
 func (s *service) error(err error, instructions, input string) error {
 	code := ai.ErrorUnknown
-	var aerr *genai.APIError
-	if errors.As(err, &aerr) {
-		if aerr.Code == http.StatusUnauthorized {
+	if aerr, ok := errors.AsType[*genai.APIError](err); ok {
+		switch aerr.Code {
+		case http.StatusUnauthorized:
 			code = ai.ErrorCredentials
-		} else if aerr.Code == http.StatusTooManyRequests {
+		case http.StatusTooManyRequests:
 			code = ai.ErrorRateLimit
 		}
 	}

@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/flows/engine"
+	"github.com/nyaruka/goflow/flows/events"
 	"github.com/nyaruka/goflow/test/services"
-	"github.com/nyaruka/mailroom/core/goflow"
-	"github.com/nyaruka/mailroom/runtime"
+	"github.com/nyaruka/mailroom/v26/core/goflow"
+	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/nyaruka/null/v3"
 )
 
@@ -23,11 +25,14 @@ type LLMID int
 // NilLLMID is nil value for LLM IDs
 const NilLLMID = LLMID(0)
 
-var registeredLLMServices = map[string]func(*LLM, *http.Client) (flows.LLMService, error){}
+// maxOutputTokensLimit is the hard ceiling we apply to any LLM's configured max_output_tokens.
+const maxOutputTokensLimit = 16000
+
+var registeredLLMServices = map[string]func(*runtime.Runtime, *LLM, *http.Client) (flows.LLMService, error){}
 
 // Register a LLM service factory with the engine
 func init() {
-	RegisterLLMService("test", func(*LLM, *http.Client) (flows.LLMService, error) {
+	RegisterLLMService("test", func(*runtime.Runtime, *LLM, *http.Client) (flows.LLMService, error) {
 		return services.NewLLM(), nil
 	})
 
@@ -35,7 +40,7 @@ func init() {
 }
 
 // RegisterLLMService registers a LLM service for the given type code
-func RegisterLLMService(typ string, fn func(*LLM, *http.Client) (flows.LLMService, error)) {
+func RegisterLLMService(typ string, fn func(*runtime.Runtime, *LLM, *http.Client) (flows.LLMService, error)) {
 	registeredLLMServices[typ] = fn
 }
 
@@ -43,39 +48,69 @@ func llmServiceFactory(rt *runtime.Runtime) engine.LLMServiceFactory {
 	httpClient, _ := goflow.HTTP(rt.Config)
 
 	return func(llm *flows.LLM) (flows.LLMService, error) {
-		return llm.Asset().(*LLM).AsService(httpClient)
+		return llm.Asset().(*LLM).AsService(rt, httpClient)
 	}
 }
 
 // LLM is our type for a large language model
 type LLM struct {
-	ID_     LLMID          `json:"id"`
-	UUID_   assets.LLMUUID `json:"uuid"`
-	Type_   string         `json:"llm_type"`
-	Model_  string         `json:"model"`
-	Name_   string         `json:"name"`
-	Config_ Config         `json:"config"`
+	ID_              LLMID            `json:"id"`
+	UUID_            assets.LLMUUID   `json:"uuid"`
+	Type_            string           `json:"llm_type"`
+	Model_           string           `json:"model"`
+	Name_            string           `json:"name"`
+	Config_          Config           `json:"config"`
+	MaxOutputTokens_ int              `json:"max_output_tokens"`
+	Roles_           []assets.LLMRole `json:"roles"`
 }
 
-func (l *LLM) ID() LLMID            { return l.ID_ }
-func (l *LLM) UUID() assets.LLMUUID { return l.UUID_ }
-func (l *LLM) Name() string         { return l.Name_ }
-func (l *LLM) Type() string         { return l.Type_ }
-func (l *LLM) Model() string        { return l.Model_ }
-func (l *LLM) Config() Config       { return l.Config_ }
+func (l *LLM) ID() LLMID               { return l.ID_ }
+func (l *LLM) UUID() assets.LLMUUID    { return l.UUID_ }
+func (l *LLM) Name() string            { return l.Name_ }
+func (l *LLM) Type() string            { return l.Type_ }
+func (l *LLM) Model() string           { return l.Model_ }
+func (l *LLM) Config() Config          { return l.Config_ }
+func (l *LLM) MaxOutputTokens() int    { return min(l.MaxOutputTokens_, maxOutputTokensLimit) }
+func (l *LLM) Roles() []assets.LLMRole { return l.Roles_ }
 
-func (l *LLM) AsService(client *http.Client) (flows.LLMService, error) {
+func (l *LLM) AsService(rt *runtime.Runtime, client *http.Client) (flows.LLMService, error) {
 	fn := registeredLLMServices[l.Type()]
 	if fn == nil {
 		return nil, fmt.Errorf("unknown type '%s' for LLM: %s", l.Type(), l.UUID())
 	}
-	return fn(l, client)
+	return fn(rt, l, client)
 }
 
-func (l *LLM) RecordCall(rt *runtime.Runtime, d time.Duration, tokensUsed int64) {
-	// TODO record tokens used ?
+// RecordCall records stats for an LLM call and returns the daily count rows to be inserted.
+func (l *LLM) RecordCall(rt *runtime.Runtime, oa *OrgAssets, e *events.LLMCalled) []*LLMDailyCount {
+	rt.Stats.RecordLLMCall(l.Type(), l.Model(), time.Duration(e.ElapsedMS)*time.Millisecond)
 
-	rt.Stats.RecordLLMCall(l.Type(), l.Model(), d)
+	day := dates.ExtractDate(dates.Now().In(oa.Env().Timezone()))
+	counts := []*LLMDailyCount{{LLMID: l.ID(), Day: day, Scope: "calls", Count: 1}}
+	if e.Tokens.Input > 0 {
+		counts = append(counts, &LLMDailyCount{LLMID: l.ID(), Day: day, Scope: "tokens:in", Count: e.Tokens.Input})
+	}
+	if e.Tokens.Output > 0 {
+		counts = append(counts, &LLMDailyCount{LLMID: l.ID(), Day: day, Scope: "tokens:out", Count: e.Tokens.Output})
+	}
+	return counts
+}
+
+type LLMDailyCount struct {
+	LLMID LLMID      `db:"llm_id"`
+	Day   dates.Date `db:"day"`
+	Scope string     `db:"scope"`
+	Count int64      `db:"count"`
+}
+
+const sqlInsertLLMDailyCount = `INSERT INTO ai_llmcount(llm_id, scope, day, count, is_squashed) VALUES(:llm_id, :scope, :day, :count, FALSE)`
+
+// InsertLLMDailyCounts inserts the given LLM daily count rows.
+func InsertLLMDailyCounts(ctx context.Context, tx DBorTx, counts []*LLMDailyCount) error {
+	if len(counts) == 0 {
+		return nil
+	}
+	return BulkQuery(ctx, "inserted llm daily counts", tx, sqlInsertLLMDailyCount, counts)
 }
 
 // loads the LLMs for the passed in org
@@ -90,7 +125,8 @@ func loadLLMs(ctx context.Context, db *sql.DB, orgID OrgID) ([]assets.LLM, error
 
 const sqlSelectLLMs = `
 SELECT ROW_TO_JSON(r) FROM (
-      SELECT l.id, l.uuid, l.name, l.llm_type, l.model, l.config
+      SELECT l.id, l.uuid, l.name, l.llm_type, l.model, l.config, l.max_output_tokens,
+             (SELECT ARRAY(SELECT CASE r WHEN 'T' THEN 'editing' WHEN 'F' THEN 'engine' END FROM unnest(regexp_split_to_array(l.roles,'')) AS r)) AS roles
         FROM ai_llm l
        WHERE l.org_id = $1 AND l.is_active
     ORDER BY l.created_on ASC
