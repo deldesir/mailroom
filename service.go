@@ -90,7 +90,7 @@ func (s *Service) Start() error {
 	}
 
 	// test DynamoDB tables (optional in nanoRP mode)
-	if s.rt.Dynamo.Main != nil && s.rt.Dynamo.Main.Client() != nil {
+	if s.rt.Dynamo != nil && s.rt.Dynamo.Main != nil && s.rt.Dynamo.Main.Client() != nil {
 		if err := dynamo.Test(s.ctx, s.rt.Dynamo.Main.Client(), c.DynamoTablePrefix+"Main", c.DynamoTablePrefix+"History"); err != nil {
 			log.Error("dynamodb not reachable", "error", err)
 		} else {
