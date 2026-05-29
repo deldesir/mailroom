@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 
 	"github.com/go-playground/validator/v10"
@@ -25,8 +26,10 @@ type Config struct {
 	Valkey     string `validate:"url,startswith=valkey:"             help:"URL for your Valkey instance"`
 	SentryDSN  string `                                              help:"the DSN used for logging errors to Sentry"`
 
-	Address          string `help:"the address to bind our web server to"`
-	Port             int    `help:"the port to bind our web server to"`
+	PublicAddress    string `help:"the address to bind our public web server to"`
+	PublicPort       int    `help:"the port to bind our public web server to"`
+	InternalAddress  string `help:"the address to bind our internal web server to"`
+	InternalPort     int    `help:"the port to bind our internal web server to"`
 	AuthToken        string `help:"the token clients will need to authenticate web requests"`
 	Domain           string `help:"the domain that mailroom is listening on"`
 	AttachmentDomain string `help:"the domain that will be used for relative attachment"`
@@ -46,11 +49,12 @@ type Config struct {
 
 	SMTPServer           string   `help:"the default SMTP configuration for sending flow emails, e.g. smtp://user%40password@server:port/?from=foo%40gmail.com"`
 	DisallowedNetworks   []string `help:"comma separated list of IP addresses and networks which engine can't make HTTP calls to"`
+	WebhookProxyURL      string   `validate:"omitempty,http_url" help:"optional URL of a forward HTTP proxy to use for user-controlled webhook calls, e.g. http://proxy.example.com:3128"`
 	MaxStepsPerSprint    int      `help:"the maximum number of steps allowed per engine sprint"`
 	MaxSprintsPerSession int      `help:"the maximum number of sprints allowed per engine session"`
 	MaxValueLength       int      `help:"the maximum size in characters for contact field values and run result values"`
 
-	Elastic              string `validate:"omitempty,url" help:"the URL of your ElasticSearch instance"`
+	ElasticEndpoint      string `validate:"omitempty,url" help:"the URL of your ElasticSearch instance"`
 	ElasticUsername      string `help:"the username for ElasticSearch if using basic auth"`
 	ElasticPassword      string `help:"the password for ElasticSearch if using basic auth"`
 	ElasticContactsIndex string `help:"the name of the contacts index written by mailroom"`
@@ -67,16 +71,18 @@ type Config struct {
 	S3AttachmentsBucket string `help:"S3 bucket to write attachments to"`
 	S3PathStyle         bool   `help:"S3 should use path style URLs"`
 
+	CourierEndpoint  string `help:"the base URL used for internal calls to courier" validate:"url"`
+	CourierAuthToken string `help:"the authentication token used for requests to Courier"`
+
+	CentrifugoEndpoint string `help:"the endpoint of the Centrifugo server"`
+	CentrifugoKey      string `help:"the API key for the Centrifugo server"`
+
 	LatencyExcludedOrgs []int  `help:"comma separated list of org IDs to exclude from latency metrics"`
 	MetricsReporting    string `validate:"eq=off|eq=basic|eq=advanced"     help:"the level of metrics reporting"`
 	CloudwatchNamespace string `help:"the namespace to use for cloudwatch metrics"`
 	DeploymentID        string `help:"the deployment identifier to use for metrics"`
 	InstanceID          string `help:"the instance identifier to use for metrics"`
 
-	CentrifugoEndpoint string `help:"the endpoint of the Centrifugo server"`
-	CentrifugoKey      string `help:"the API key for the Centrifugo server"`
-
-	CourierAuthToken       string `help:"the authentication token used for requests to Courier"`
 	AndroidCredentialsFile string `help:"path to JSON file with FCM service account credentials used to sync Android relayers"`
 	IDObfuscationKey       string `help:"key used to decode obfuscated IDs, as 4 comma separated integers" validate:"omitempty,hexadecimal,len=32"`
 
@@ -88,6 +94,7 @@ type Config struct {
 	DisallowedIPs          []net.IP
 	DisallowedNets         []*net.IPNet
 	IDObfuscationKeyParsed [4]uint32
+	WebhookProxyURLParsed  *url.URL
 }
 
 // NewDefaultConfig returns a new default configuration object
@@ -106,9 +113,13 @@ func NewDefaultConfig() *Config {
 		DBPoolSize: 36,
 		Valkey:     "valkey://valkey:6379/15",
 
-		Address:  "localhost",
-		Port:     8090,
-		SpoolDir: "./_spool",
+		PublicAddress:   "localhost",
+		PublicPort:      8090,
+		InternalAddress: "localhost",
+		InternalPort:    8091,
+		SpoolDir:        "./_spool",
+
+		CourierEndpoint: "http://localhost:8080",
 
 		WorkersRealtime:  32,
 		WorkersBatch:     8,
@@ -120,12 +131,12 @@ func NewDefaultConfig() *Config {
 		WebhooksHealthyResponseLimit: 10000,
 
 		SMTPServer:           "",
-		DisallowedNetworks:   []string{`127.0.0.1`, `::1`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fe80::/10`},
+		DisallowedNetworks:   []string{`127.0.0.0/8`, `::1`, `fe80::/10`, `fc00::/7`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16`, `0.0.0.0/8`},
 		MaxStepsPerSprint:    250,
 		MaxSprintsPerSession: 250,
 		MaxValueLength:       640,
 
-		Elastic:              "",
+		ElasticEndpoint:      "",
 		ElasticUsername:      "",
 		ElasticPassword:      "",
 		ElasticContactsIndex: "contacts-v1",
@@ -142,7 +153,7 @@ func NewDefaultConfig() *Config {
 		S3AttachmentsBucket: "temba-attachments",
 
 		MetricsReporting:    "off",
-		CloudwatchNamespace: "Temba/Mailroom",
+		CloudwatchNamespace: "Mailroom",
 		DeploymentID:        "dev",
 		InstanceID:          hostname,
 
@@ -197,6 +208,15 @@ func (c *Config) Parse() error {
 	// parse our disallowed networks
 	if err := c.parseDisallowedNetworks(); err != nil {
 		return fmt.Errorf("invalid disallowed networks: %w", err)
+	}
+
+	// parse the optional webhook proxy URL (validator already enforced http/https scheme)
+	if c.WebhookProxyURL != "" {
+		u, err := url.Parse(c.WebhookProxyURL)
+		if err != nil {
+			return fmt.Errorf("invalid webhook proxy URL: %w", err)
+		}
+		c.WebhookProxyURLParsed = u
 	}
 
 	// parse our ID obfuscation key
