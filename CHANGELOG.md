@@ -1,3 +1,83 @@
+v26.1.127 (2026-05-28)
+-------------------------
+ * Move airtime transfers to an async lifecycle driven by provider status callbacks
+ * Record airtime status changes as event tags in contact history
+
+v26.1.126 (2026-05-27)
+-------------------------
+ * Set ExternalID on simulator airtime transfers
+ * Update to goflow v0.276.1 which adds flow spec 14.4.1 to fix broken resthook actions
+
+v26.1.125 (2026-05-26)
+-------------------------
+ * Change default cloudwatch namespace to Mailroom
+ * Update to goflow v0.275.0 and remove classifier support
+
+v26.1.124 (2026-05-25)
+-------------------------
+ * Update deps and fix disallowed network list
+
+v26.1.123 (2026-05-25)
+-------------------------
+ * Expand default DisallowedNetworks (full loopback, IPv4-mapped IPv6, ULA, CGNAT, and more)
+
+v26.1.122 (2026-05-20)
+-------------------------
+ * Trim webhook User-Agent to avoid leaking build details
+
+v26.1.121 (2026-05-20)
+-------------------------
+ * Route user-controlled webhook calls through optional outbound HTTP proxy
+ * Drop /ping back-compat alias
+
+v26.1.120 (2026-05-19)
+-------------------------
+ * Serve health response at /, alias /ping for back-compat
+
+v26.1.119 (2026-05-19)
+-------------------------
+ * Drop deprecated temperature param from Anthropic LLM calls
+
+v26.1.118 (2026-05-18)
+-------------------------
+ * Expose internal /mi/* routes only on the internal listener
+
+v26.1.117 (2026-05-18)
+-------------------------
+ * Add /ping liveness endpoint on both listeners
+
+v26.1.116 (2026-05-18)
+-------------------------
+ * Rename Config.Address/Port to PublicAddress/PublicPort
+ * Renumber listener ports: 80xx prod, 81xx tests
+ * Expose internal endpoints on separate listener port
+
+v26.1.115 (2026-05-14)
+-------------------------
+ * Remove plaintext webhook logging
+
+v26.1.114 (2026-05-13)
+-------------------------
+ * Detach context when recording LLM call counts
+ * Log warning when /mr/* request arrives over plaintext HTTP
+
+v26.1.113 (2026-05-13)
+-------------------------
+ * Rename Elastic config field to ElasticEndpoint
+
+v26.1.112 (2026-05-13)
+-------------------------
+ * Add MAILROOM_COURIER_ENDPOINT config for calls to courier
+
+v26.1.111 (2026-05-12)
+-------------------------
+ * Drop /mr/ backwards-compat mounts for internal endpoints
+
+v26.1.110 (2026-05-12)
+-------------------------
+ * Use new /ci/attachment/fetch courier endpoint instead of deprecated /c/_fetch-attachment
+ * Use separate valkey DB for tests to avoid interference from local courier
+
 v26.1.109 (2026-05-04)
 -------------------------
  * Allow disabling task processing per queue by setting workers to zero

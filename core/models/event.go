@@ -29,10 +29,11 @@ const (
 	eternity time.Duration = -1
 
 	eventTagDeletion = "del"
+	eventTagStatus   = "sts"
 )
 
 var eventPersistence = map[string]time.Duration{
-	events.TypeAirtimeTransferred:     eternity,
+	events.TypeAirtimeCreated:         eternity,
 	events.TypeCallCreated:            eternity,
 	events.TypeCallMissed:             eternity,
 	events.TypeCallReceived:           eternity,

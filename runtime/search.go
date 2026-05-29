@@ -17,8 +17,8 @@ type Elastic struct {
 }
 
 func newElastic(cfg *Config) (*Elastic, error) {
-	if cfg.Elastic == "" {
-		slog.Info("Elasticsearch disabled (MAILROOM_ELASTIC is empty)")
+	if cfg.ElasticEndpoint == "" {
+		slog.Info("Elasticsearch disabled (MAILROOM_ELASTIC_ENDPOINT is empty)")
 		return &Elastic{
 			Client: nil, // Explicitly nil — read functions check isNanorpMode()
 			Writer: nil, // No writer needed without ES
@@ -26,7 +26,7 @@ func newElastic(cfg *Config) (*Elastic, error) {
 		}, nil
 	}
 
-	client, err := elastic.NewClient(cfg.Elastic, cfg.ElasticUsername, cfg.ElasticPassword)
+	client, err := elastic.NewClient(cfg.ElasticEndpoint, cfg.ElasticUsername, cfg.ElasticPassword)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Elasticsearch client: %w", err)
 	}
