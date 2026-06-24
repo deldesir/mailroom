@@ -76,9 +76,14 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 		return nil, fmt.Errorf("error creating Valkey pool: %w", err)
 	}
 
-	rt.S3, err = s3x.NewService(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.S3Endpoint, cfg.S3PathStyle)
-	if err != nil {
-		return nil, fmt.Errorf("error creating S3 service: %w", err)
+	// nanoRP hard default: S3 (and AWS) is OFF unless an attachments bucket is
+	// explicitly configured. Skip client creation so the AWS SDK never resolves
+	// credentials (no IMDS probe).
+	if cfg.S3AttachmentsBucket != "" {
+		rt.S3, err = s3x.NewService(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.S3Endpoint, cfg.S3PathStyle)
+		if err != nil {
+			return nil, fmt.Errorf("error creating S3 service: %w", err)
+		}
 	}
 
 	rt.ES, err = newElastic(cfg)

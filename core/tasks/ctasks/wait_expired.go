@@ -71,7 +71,7 @@ func (t *WaitExpired) Perform(ctx context.Context, rt *runtime.Runtime, oa *mode
 			return fmt.Errorf("error hanging up call for voice session: %w", err)
 		}
 
-		if clog != nil {
+		if clog != nil && rt.Dynamo.Enabled() {
 			if _, err := rt.Dynamo.Main.Queue(clog); err != nil {
 				return fmt.Errorf("error queuing IVR channel log to writer: %w", err)
 			}

@@ -97,8 +97,10 @@ func handleDTOneStatus(ctx context.Context, rt *runtime.Runtime, r *http.Request
 
 	// record the change as an event tag in the contact's history (keyed by the airtime_created event UUID)
 	// so clients can inject the transfer's current _status when rendering that event
-	if _, err := rt.Dynamo.History.Queue(tag); err != nil {
-		return fmt.Errorf("error queuing airtime status tag: %w", err)
+	if rt.Dynamo.Enabled() {
+		if _, err := rt.Dynamo.History.Queue(tag); err != nil {
+			return fmt.Errorf("error queuing airtime status tag: %w", err)
+		}
 	}
 
 	return web.WriteMarshalled(w, http.StatusOK, map[string]string{"status": "ok"})
