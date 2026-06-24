@@ -150,7 +150,7 @@ func NewDefaultConfig() *Config {
 		DynamoTablePrefix: "",
 
 		S3Endpoint:          "https://s3.amazonaws.com",
-		S3AttachmentsBucket: "temba-attachments",
+		S3AttachmentsBucket: "",
 
 		MetricsReporting:    "off",
 		CloudwatchNamespace: "Mailroom",

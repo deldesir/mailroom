@@ -221,6 +221,10 @@ func (o *Org) StoreAttachment(ctx context.Context, rt *runtime.Runtime, filename
 
 	path := o.attachmentPath("attachments", filename)
 
+	if rt.S3 == nil {
+		return "", fmt.Errorf("attachment storage is disabled (nanoRP: no S3 configured)")
+	}
+
 	url, err := rt.S3.PutObject(ctx, rt.Config.S3AttachmentsBucket, path, contentType, contentBytes, types.ObjectCannedACLPublicRead)
 	if err != nil {
 		return "", fmt.Errorf("unable to store attachment content: %w", err)

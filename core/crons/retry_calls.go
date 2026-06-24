@@ -91,9 +91,11 @@ func (c *RetryCallsCron) Run(ctx context.Context, rt *runtime.Runtime) (map[stri
 	}
 
 	// log any error writing our channel logs, but continue
-	for _, clog := range clogs {
-		if _, err := rt.Dynamo.Main.Queue(clog); err != nil {
-			slog.Error("error queuing IVR channel log to writer", "error", err, "log", clog.UUID)
+	if rt.Dynamo.Enabled() {
+		for _, clog := range clogs {
+			if _, err := rt.Dynamo.Main.Queue(clog); err != nil {
+				slog.Error("error queuing IVR channel log to writer", "error", err, "log", clog.UUID)
+			}
 		}
 	}
 

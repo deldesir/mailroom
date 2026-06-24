@@ -404,14 +404,16 @@ func BulkCommit(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, 
 
 	// send events to be persisted to the history table writer
 	eventsWritten := 0
-	for _, scene := range scenes {
-		for _, evt := range scene.persistEvents {
-			if _, err := rt.Dynamo.History.Queue(evt); err != nil {
-				return fmt.Errorf("error queuing scene event to writer: %w", err)
+	if rt.Dynamo.Enabled() {
+		for _, scene := range scenes {
+			for _, evt := range scene.persistEvents {
+				if _, err := rt.Dynamo.History.Queue(evt); err != nil {
+					return fmt.Errorf("error queuing scene event to writer: %w", err)
+				}
 			}
-		}
 
-		eventsWritten += len(scene.persistEvents)
+			eventsWritten += len(scene.persistEvents)
+		}
 	}
 
 	slog.Debug("events queued to history writer", "count", eventsWritten)

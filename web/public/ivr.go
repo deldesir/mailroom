@@ -83,8 +83,10 @@ func newIVRHandler(handler ivrHandlerFn, logType svclogs.Type) web.Handler {
 
 		clog.End()
 
-		if _, err := rt.Dynamo.Main.Queue(clog); err != nil {
-			slog.Error("error queuing IVR channel log to writer", "error", err, "elapsed", clog.Elapsed, "channel", ch.UUID())
+		if rt.Dynamo.Enabled() {
+			if _, err := rt.Dynamo.Main.Queue(clog); err != nil {
+				slog.Error("error queuing IVR channel log to writer", "error", err, "elapsed", clog.Elapsed, "channel", ch.UUID())
+			}
 		}
 
 		return rerr

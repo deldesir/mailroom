@@ -47,9 +47,11 @@ func (h *deleteMessages) Execute(ctx context.Context, rt *runtime.Runtime, tx *s
 		}
 	}
 
-	for _, tag := range tags {
-		if _, err := rt.Dynamo.History.Queue(tag); err != nil {
-			return fmt.Errorf("error queuing deletion tag to writer: %w", err)
+	if rt.Dynamo.Enabled() {
+		for _, tag := range tags {
+			if _, err := rt.Dynamo.History.Queue(tag); err != nil {
+				return fmt.Errorf("error queuing deletion tag to writer: %w", err)
+			}
 		}
 	}
 
