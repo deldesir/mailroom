@@ -17,7 +17,7 @@ import (
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/tasks/ctasks"
 	"github.com/nyaruka/mailroom/v26/runtime"
-	"github.com/nyaruka/mailroom/v26/utils/clogs"
+	"github.com/nyaruka/mailroom/v26/utils/svclogs"
 	"github.com/nyaruka/mailroom/v26/web"
 )
 
@@ -29,7 +29,7 @@ func init() {
 
 type ivrHandlerFn func(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, ch *models.Channel, svc ivr.Service, r *http.Request, w http.ResponseWriter) (*models.Call, error)
 
-func newIVRHandler(handler ivrHandlerFn, logType clogs.Type) web.Handler {
+func newIVRHandler(handler ivrHandlerFn, logType svclogs.Type) web.Handler {
 	return func(ctx context.Context, rt *runtime.Runtime, r *http.Request, w http.ResponseWriter) error {
 		channelUUID := assets.ChannelUUID(r.PathValue("uuid"))
 
@@ -52,7 +52,7 @@ func newIVRHandler(handler ivrHandlerFn, logType clogs.Type) web.Handler {
 		}
 
 		// get the IVR service for this channel
-		svc, err := ivr.GetService(ch)
+		svc, err := ivr.GetService(rt.HTTP.Services, ch)
 		if svc == nil {
 			return writeGenericErrorResponse(w, fmt.Errorf("unable to get service for channel: %s: %w", ch.UUID(), err))
 		}

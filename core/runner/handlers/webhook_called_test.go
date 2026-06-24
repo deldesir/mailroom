@@ -27,9 +27,8 @@ func TestWebhookCalled(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 
 	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-	defer httpx.SetRequestor(httpx.DefaultRequestor)
 
-	httpx.SetRequestor(httpx.NewMockRequestor(map[string][]*httpx.MockResponse{
+	rt.HTTP.Engine.Transport = httpx.WithMocks(http.DefaultTransport, map[string][]*httpx.MockResponse{
 		"http://rapidpro.io/": {
 			httpx.NewMockResponse(200, nil, []byte("OK")),
 			httpx.NewMockResponse(200, nil, []byte("OK")),
@@ -39,7 +38,7 @@ func TestWebhookCalled(t *testing.T) {
 			httpx.NewMockResponse(410, nil, []byte("Gone")),
 			httpx.NewMockResponse(410, nil, []byte("Gone")),
 		},
-	}))
+	})
 
 	// add a few resthooks
 	rt.DB.MustExec(`INSERT INTO api_resthook(is_active, slug, org_id, created_on, modified_on, created_by_id, modified_by_id) VALUES(TRUE, 'foo', 1, NOW(), NOW(), 1, 1);`)
@@ -90,7 +89,7 @@ func TestUnhealthyWebhookCalls(t *testing.T) {
 
 	// webhook service with a 2 second delay
 	svc := &failingWebhookService{delay: 2 * time.Second}
-	eng := engine.NewBuilder().WithWebhookServiceFactory(func(flows.SessionAssets) (flows.WebhookService, error) { return svc, nil }).Build()
+	eng := engine.NewBuilder().WithWebhookServiceFactory(func(*http.Client, flows.SessionAssets) (flows.WebhookService, error) { return svc, nil }).Build()
 
 	runFlow := func() {
 		scene := runner.NewScene(mc, contact)

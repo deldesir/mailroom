@@ -1,3 +1,32 @@
+v26.3.0 (2026-06-22)
+-------------------------
+ * Default to empty public bind host
+ * Add realtime subscribe/sub_refresh proxy endpoints
+
+v26.2.0 (2026-06-15)
+-------------------------
+ * Update dependencies including phonenumbers to v2.0.1
+
+v26.1.132 (2026-06-04)
+-------------------------
+ * Update to goflow v0.277.3 and gocommon v1.83.0 and rework HTTP clients
+
+v26.1.131 (2026-06-03)
+-------------------------
+ * Update goflow to v0.277.1
+
+v26.1.130 (2026-06-02)
+-------------------------
+ * Update phonenumbers to v1.8.0
+
+v26.1.129 (2026-06-01)
+-------------------------
+ * Add OrgID to LLM model
+
+v26.1.128 (2026-06-01)
+-------------------------
+ * Rename clogs package to svclogs
+
 v26.1.127 (2026-05-28)
 -------------------------
  * Move airtime transfers to an async lifecycle driven by provider status callbacks

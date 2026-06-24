@@ -49,12 +49,10 @@ func emailServiceFactory(rt *runtime.Runtime) engine.EmailServiceFactory {
 }
 
 func airtimeServiceFactory(rt *runtime.Runtime) engine.AirtimeServiceFactory {
-	// give airtime transfers an extra long timeout
-	airtimeHTTPClient := &http.Client{Timeout: time.Duration(120 * time.Second)}
 	airtimeHTTPRetries := httpx.NewFixedRetries(time.Second*5, time.Second*10)
 
 	return func(sa flows.SessionAssets) (flows.AirtimeService, error) {
-		return orgFromAssets(sa).AirtimeService(rt, airtimeHTTPClient, airtimeHTTPRetries)
+		return orgFromAssets(sa).AirtimeService(rt, rt.HTTP.Services, airtimeHTTPRetries)
 	}
 }
 
