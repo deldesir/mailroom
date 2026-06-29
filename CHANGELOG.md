@@ -1,3 +1,14 @@
+v26.3.2 (2026-06-25)
+-------------------------
+ * Route per-ticket history events to ticket-scoped realtime channels
+ * Remove subscribe/sub_refresh proxy endpoints, now only read subscription presence keys
+ * Make centrifugo required, assuming credentials are always configured
+ * Publish engine events to a contact's history channel when it has live subscribers
+
+v26.3.1 (2026-06-24)
+-------------------------
+ * Rename client-subscribable channel namespace from "chat" to "history"
+
 v26.3.0 (2026-06-22)
 -------------------------
  * Default to empty public bind host
