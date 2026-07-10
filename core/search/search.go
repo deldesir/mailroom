@@ -11,10 +11,11 @@ import (
 	"github.com/elastic/go-elasticsearch/v9/typedapi/types"
 	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/gocommon/jsonx"
+	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/goflow/contactql/es"
-	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
 )
@@ -37,7 +38,20 @@ func newConverter(oa *models.OrgAssets, uuidAsDocID bool) *es.Converter {
 	return es.NewConverter(oa.Env(), assetMapper, uuidAsDocID)
 }
 
-func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []flows.ContactUUID, query *contactql.ContactQuery) elastic.Query {
+// queryAsUUID returns the UUID value if the given query is a single equality condition on contact UUID,
+// e.g. `uuid = "0197c464-c397-72e8-8b52-9c4b0b23e096"`, or false if it's anything else.
+func queryAsUUID(query *contactql.ContactQuery) (core.ContactUUID, bool) {
+	if query != nil {
+		if c, ok := query.Root().(*contactql.Condition); ok {
+			if c.PropertyType() == contactql.PropertyTypeAttribute && c.PropertyKey() == contactql.AttributeUUID && c.Operator() == contactql.OpEqual && uuids.Is(c.Value()) {
+				return core.ContactUUID(c.Value()), true
+			}
+		}
+	}
+	return "", false
+}
+
+func buildContactQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, query *contactql.ContactQuery) elastic.Query {
 	// use filter context for all clauses since we never sort by relevance score, and filter clauses
 	// are cacheable and skip scoring
 	filter := []elastic.Query{
@@ -109,7 +123,7 @@ func GetContactTotal(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAss
 }
 
 // GetContactUUIDsForQueryPage returns a page of contact UUIDs for the given query and sort
-func GetContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, excludeUUIDs []flows.ContactUUID, query string, sort string, offset int, pageSize int) (*contactql.ContactQuery, []flows.ContactUUID, int64, error) {
+func GetContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, excludeUUIDs []core.ContactUUID, query string, sort string, offset int, pageSize int) (*contactql.ContactQuery, []core.ContactUUID, int64, error) {
 	env := oa.Env()
 	var parsed *contactql.ContactQuery
 	var err error
@@ -166,7 +180,7 @@ func GetContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *m
 	return parsed, hits, total, nil
 }
 
-func getContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []flows.ContactUUID, parsed *contactql.ContactQuery, fieldSort map[string]any, offset int, pageSize int, index string) ([]flows.ContactUUID, int64, error) {
+func getContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery, fieldSort map[string]any, offset int, pageSize int, index string) ([]core.ContactUUID, int64, error) {
 	start := time.Now()
 	eq := buildContactQuery(oa, group, status, excludeUUIDs, parsed)
 
@@ -184,9 +198,9 @@ func getContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *m
 		return nil, 0, fmt.Errorf("error performing query: %w", err)
 	}
 
-	uuids := make([]flows.ContactUUID, 0, pageSize)
+	uuids := make([]core.ContactUUID, 0, pageSize)
 	for _, hit := range results.Hits.Hits {
-		uuids = append(uuids, flows.ContactUUID(*hit.Id_))
+		uuids = append(uuids, core.ContactUUID(*hit.Id_))
 	}
 
 	slog.Debug("paged contact query complete", "org_id", oa.OrgID(), "index", index, "elapsed", time.Since(start), "page_count", len(uuids), "total_count", results.Hits.Total.Value)
@@ -195,7 +209,7 @@ func getContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *m
 }
 
 // GetContactUUIDsForQuery returns up to limit the contact UUIDs that match the given query, sorted by contact ID. Limit of -1 means return all.
-func GetContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, query string, limit int) ([]flows.ContactUUID, error) {
+func GetContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, query string, limit int) ([]core.ContactUUID, error) {
 	env := oa.Env()
 	var parsed *contactql.ContactQuery
 	var err error
@@ -219,14 +233,34 @@ func GetContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *model
 		return GetContactUUIDsForQueryPostgres(ctx, rt, oa, group, status, parsed, limit)
 	}
 
+	// a query that is a single condition on UUID can be resolved from the database, so that contacts not yet
+	// indexed in Elastic are still visible to such queries
+	if uuid, ok := queryAsUUID(parsed); ok {
+		var groupID models.GroupID
+		if group != nil {
+			groupID = group.ID()
+		}
+
+		exists, err := models.ContactExists(ctx, rt.DB, oa.OrgID(), uuid, groupID, status)
+		if err != nil {
+			return nil, fmt.Errorf("error looking up contact UUID in database: %w", err)
+		}
+
+		matches := []core.ContactUUID{}
+		if exists && limit != 0 {
+			matches = append(matches, uuid)
+		}
+		return matches, nil
+	}
+
 	eq := buildContactQuery(oa, group, status, nil, parsed)
 
 	return getContactUUIDsForQuery(ctx, rt, oa, rt.Config.ElasticContactsIndex, eq, limit)
 }
 
-func getContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, index string, eq elastic.Query, limit int) ([]flows.ContactUUID, error) {
+func getContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, index string, eq elastic.Query, limit int) ([]core.ContactUUID, error) {
 	sort := elastic.SortBy("id", true)
-	uuids := make([]flows.ContactUUID, 0, 100)
+	uuids := make([]core.ContactUUID, 0, 100)
 
 	// if limit provided that can be done with single search, do that
 	if limit >= 0 && limit <= 10_000 {
@@ -298,9 +332,9 @@ func getContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *model
 }
 
 // appendUUIDsFromESHits extracts contact UUIDs from Elasticsearch hits using the document _id
-func appendUUIDsFromESHits(uuids []flows.ContactUUID, hits []types.Hit) []flows.ContactUUID {
+func appendUUIDsFromESHits(uuids []core.ContactUUID, hits []types.Hit) []core.ContactUUID {
 	for _, hit := range hits {
-		uuids = append(uuids, flows.ContactUUID(*hit.Id_))
+		uuids = append(uuids, core.ContactUUID(*hit.Id_))
 	}
 	return uuids
 }

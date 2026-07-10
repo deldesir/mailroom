@@ -10,12 +10,14 @@ import (
 
 	"github.com/buger/jsonparser"
 	"github.com/nyaruka/gocommon/stringsx"
+	"github.com/nyaruka/goflow/core"
+	"github.com/nyaruka/goflow/core/events"
 	"github.com/nyaruka/goflow/flows"
-	"github.com/nyaruka/goflow/flows/events"
 	"github.com/nyaruka/goflow/utils"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/runner"
 	"github.com/nyaruka/mailroom/v26/runtime"
+	mrutils "github.com/nyaruka/mailroom/v26/utils"
 	"github.com/nyaruka/vkutil"
 	"github.com/vinovest/sqlx"
 )
@@ -39,7 +41,7 @@ func (h *insertFlowStats) Execute(ctx context.Context, rt *runtime.Runtime, tx *
 	countsBySegment := make(map[segmentInfo]int, 10)
 	recentBySegment := make(map[segmentInfo][]*segmentRecentContact, 10)
 	categoryChanges := make(map[resultInfo]int, 10)
-	nodeTypeCache := make(map[flows.NodeUUID]string)
+	nodeTypeCache := make(map[core.NodeUUID]string)
 
 	// for test determinism
 	scenesOrdered := slices.SortedStableFunc(maps.Keys(scenes), func(s1, s2 *runner.Scene) int { return cmp.Compare(s1.SessionUUID(), s2.SessionUUID()) })
@@ -63,14 +65,18 @@ func (h *insertFlowStats) Execute(ctx context.Context, rt *runtime.Runtime, tx *
 				if storeOperandsForTypes[uiNodeType] {
 					operand = seg.Operand()
 				}
-				recentBySegment[segID] = append(recentBySegment[segID], &segmentRecentContact{contact: scene.Contact, operand: operand, time: seg.Time(), rnd: vkutil.RandomBase64(10)})
+				recentBySegment[segID] = append(recentBySegment[segID], &segmentRecentContact{contact: scene.Contact, operand: operand, time: seg.Time(), rnd: mrutils.RandomBase64(10)})
 			}
 		}
 
 		for _, e := range scene.Sprint.Events() {
 			switch typed := e.(type) {
 			case *events.RunResultChanged:
-				flow := e.Step().Run().Flow().Asset().(*models.Flow)
+				f, err := oa.FlowByUUID(e.Step().Flow.UUID)
+				if err != nil {
+					return fmt.Errorf("unable to load flow with uuid: %s: %w", e.Step().Flow.UUID, err)
+				}
+				flow := f.(*models.Flow)
 				resultKey := utils.Snakify(typed.Name)
 				if typed.Previous != nil {
 					categoryChanges[resultInfo{flowID: flow.ID(), result: resultKey, category: typed.Previous.Category}]--
@@ -141,7 +147,7 @@ type resultInfo struct {
 type segmentInfo struct {
 	flowID   models.FlowID
 	exitUUID flows.ExitUUID
-	destUUID flows.NodeUUID
+	destUUID core.NodeUUID
 }
 
 type segmentRecentContact struct {
@@ -151,7 +157,7 @@ type segmentRecentContact struct {
 	rnd     string
 }
 
-func getNodeUIType(flow flows.Flow, node flows.Node, cache map[flows.NodeUUID]string) string {
+func getNodeUIType(flow flows.Flow, node flows.Node, cache map[core.NodeUUID]string) string {
 	uiType, cached := cache[node.UUID()]
 	if cached {
 		return uiType

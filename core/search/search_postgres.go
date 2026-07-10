@@ -8,7 +8,7 @@ import (
 
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/contactql"
-	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
 )
@@ -208,7 +208,7 @@ func (c *SQLConverter) convertCondition(cond *contactql.Condition) (string, erro
 	return "", fmt.Errorf("unsupported property type")
 }
 
-func buildBasePostgresQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []flows.ContactUUID, parsed *contactql.ContactQuery) (string, []any, error) {
+func buildBasePostgresQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery) (string, []any, error) {
 	c := newSQLConverter(oa)
 	
 	c.args = append(c.args, oa.OrgID())
@@ -249,7 +249,7 @@ func buildBasePostgresQuery(oa *models.OrgAssets, group *models.Group, status mo
 }
 
 // GetContactTotalPostgres replaces ES Count() with PostgreSQL COUNT(*)
-func GetContactTotalPostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []flows.ContactUUID, parsed *contactql.ContactQuery) (int64, error) {
+func GetContactTotalPostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery) (int64, error) {
 	where, args, err := buildBasePostgresQuery(oa, group, status, excludeUUIDs, parsed)
 	if err != nil {
 		return 0, fmt.Errorf("error building postgres query: %w", err)
@@ -267,7 +267,7 @@ func GetContactTotalPostgres(ctx context.Context, rt *runtime.Runtime, oa *model
 }
 
 // GetContactUUIDsForQueryPagePostgres replaces ES Search() locally
-func GetContactUUIDsForQueryPagePostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []flows.ContactUUID, parsed *contactql.ContactQuery, sortField string, sortDesc bool, offset int, pageSize int) ([]flows.ContactUUID, int64, error) {
+func GetContactUUIDsForQueryPagePostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery, sortField string, sortDesc bool, offset int, pageSize int) ([]core.ContactUUID, int64, error) {
 	where, args, err := buildBasePostgresQuery(oa, group, status, excludeUUIDs, parsed)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error building postgres query: %w", err)
@@ -282,7 +282,7 @@ func GetContactUUIDsForQueryPagePostgres(ctx context.Context, rt *runtime.Runtim
 	}
 
 	if total == 0 {
-		return []flows.ContactUUID{}, 0, nil
+		return []core.ContactUUID{}, 0, nil
 	}
 
 	// Make copy of args for row query since we're mutating length
@@ -321,20 +321,20 @@ func GetContactUUIDsForQueryPagePostgres(ctx context.Context, rt *runtime.Runtim
 	}
 	defer rows.Close()
 
-	var uuids []flows.ContactUUID
+	var uuids []core.ContactUUID
 	for rows.Next() {
 		var uuidStr string
 		if err := rows.Scan(&uuidStr); err != nil {
 			return nil, 0, err
 		}
-		uuids = append(uuids, flows.ContactUUID(uuidStr))
+		uuids = append(uuids, core.ContactUUID(uuidStr))
 	}
 	
 	return uuids, total, nil
 }
 
 // GetContactUUIDsForQueryPostgres replaces the ES Point-In-Time iterator with chunked PostgreSQL queries.
-func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, parsed *contactql.ContactQuery, limit int) ([]flows.ContactUUID, error) {
+func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, parsed *contactql.ContactQuery, limit int) ([]core.ContactUUID, error) {
 	where, args, err := buildBasePostgresQuery(oa, group, status, nil, parsed)
 	if err != nil {
 		return nil, fmt.Errorf("error building postgres query: %w", err)
@@ -351,20 +351,20 @@ func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, o
 		}
 		defer rows.Close()
 
-		var uuids []flows.ContactUUID
+		var uuids []core.ContactUUID
 		for rows.Next() {
 			var uuidStr string
 			if err := rows.Scan(&uuidStr); err != nil {
 				return nil, err
 			}
-			uuids = append(uuids, flows.ContactUUID(uuidStr))
+			uuids = append(uuids, core.ContactUUID(uuidStr))
 		}
 		return uuids, nil
 	}
 	
 	// For unbounded/large sets, use chunks with keyset pagination
 	// Using cursor id logic
-	var uuids []flows.ContactUUID
+	var uuids []core.ContactUUID
 	lastID := int64(-1)
 	
 	for {
@@ -380,7 +380,7 @@ func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, o
 			return nil, err
 		}
 		
-		var chunkUuids []flows.ContactUUID
+		var chunkUuids []core.ContactUUID
 		for rows.Next() {
 			var uuidStr string
 			var id int64
@@ -388,7 +388,7 @@ func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, o
 				rows.Close()
 				return nil, err
 			}
-			chunkUuids = append(chunkUuids, flows.ContactUUID(uuidStr))
+			chunkUuids = append(chunkUuids, core.ContactUUID(uuidStr))
 			lastID = id
 		}
 		rows.Close()
@@ -410,7 +410,7 @@ func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, o
 
 // SearchMessagesPostgres replaces the ES search and DynamoDB lookup with a single PostgreSQL query
 // that returns the nested event dict matching the original DynamoDB schema.
-func SearchMessagesPostgres(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID flows.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
+func SearchMessagesPostgres(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID core.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
 	query := `
 		SELECT m.uuid, m.text, m.created_on, m.direction,
 			   m.status, c.uuid as contact_uuid
@@ -463,7 +463,7 @@ func SearchMessagesPostgres(ctx context.Context, rt *runtime.Runtime, orgID mode
 			},
 		}
 
-		results = append(results, MessageResult{ContactUUID: flows.ContactUUID(contactUUIDStr), Event: event})
+		results = append(results, MessageResult{ContactUUID: core.ContactUUID(contactUUIDStr), Event: event})
 	}
 	return results, nil
 }

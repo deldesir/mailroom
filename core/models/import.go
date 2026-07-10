@@ -12,7 +12,7 @@ import (
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/assets"
-	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/null/v3"
 	"github.com/vinovest/sqlx"
 )
@@ -49,6 +49,7 @@ type ContactImport struct {
 	OrgID       OrgID           `json:"org_id"`
 	Status      ImportStatus    `json:"status"`
 	CreatedByID UserID          `json:"created_by_id"`
+	NumRecords  int             `json:"num_records"`
 	FinishedOn  *time.Time      `json:"finished_on"`
 
 	BatchIDs      []ContactImportBatchID `json:"batch_ids"`      // ordered
@@ -57,7 +58,7 @@ type ContactImport struct {
 
 var sqlLoadContactImport = `
 SELECT row_to_json(r) FROM (
-         SELECT i.id, i.org_id, i.status, i.created_by_id, i.finished_on, array_agg(b.id ORDER BY b.id) AS "batch_ids", array_agg(DISTINCT b.status) AS "batch_statuses"
+         SELECT i.id, i.org_id, i.status, i.created_by_id, i.num_records, i.finished_on, array_agg(b.id ORDER BY b.id) AS "batch_ids", array_agg(DISTINCT b.status) AS "batch_statuses"
            FROM contacts_contactimport i
 LEFT OUTER JOIN contacts_contactimportbatch b ON b.contact_import_id = i.id
           WHERE i.id = $1
@@ -182,13 +183,13 @@ func LoadContactImportBatch(ctx context.Context, db DBorTx, id ContactImportBatc
 
 // ContactSpec describes a contact to be updated or created
 type ContactSpec struct {
-	UUID     flows.ContactUUID   `json:"uuid"`
-	Name     *string             `json:"name"`
-	Language *string             `json:"language"`
-	Status   flows.ContactStatus `json:"status"`
-	URNs     []urns.URN          `json:"urns"`
-	Fields   map[string]string   `json:"fields"`
-	Groups   []assets.GroupUUID  `json:"groups"`
+	UUID     core.ContactUUID   `json:"uuid"`
+	Name     *string            `json:"name"`
+	Language *string            `json:"language"`
+	Status   core.ContactStatus `json:"status"`
+	URNs     []urns.URN         `json:"urns"`
+	Fields   map[string]string  `json:"fields"`
+	Groups   []assets.GroupUUID `json:"groups"`
 
 	ImportRow int `json:"_import_row"`
 }

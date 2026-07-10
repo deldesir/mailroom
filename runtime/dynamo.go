@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -24,7 +25,7 @@ func newDynamo(cfg *Config) (*Dynamo, error) {
 		return &Dynamo{}, nil
 	}
 
-	client, err := dynamo.NewClient(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.DynamoEndpoint)
+	client, err := dynamo.NewClient(context.Background(), cfg.DynamoEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("error creating DynamoDB client: %w", err)
 	}

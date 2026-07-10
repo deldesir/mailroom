@@ -26,9 +26,9 @@ type Config struct {
 	Valkey     string `validate:"url,startswith=valkey:"             help:"URL for your Valkey instance"`
 	SentryDSN  string `                                              help:"the DSN used for logging errors to Sentry"`
 
-	PublicAddress    string `help:"the address to bind our public web server to"`
-	PublicPort       int    `help:"the port to bind our public web server to"`
-	InternalAddress  string `help:"the address to bind our internal web server to"`
+	InternetAddress  string `help:"the address to bind our internet facing web server to, empty means all interfaces"`
+	InternetPort     int    `help:"the port to bind our internet facing web server to"`
+	InternalAddress  string `help:"the address to bind our internal web server to, empty means all interfaces"`
 	InternalPort     int    `help:"the port to bind our internal web server to"`
 	AuthToken        string `help:"the token clients will need to authenticate web requests"`
 	Domain           string `help:"the domain that mailroom is listening on"`
@@ -60,10 +60,6 @@ type Config struct {
 	ElasticContactsIndex string `help:"the name of the contacts index written by mailroom"`
 	ElasticMessagesIndex string `help:"the base name for monthly message indexes (e.g. messages-v1 -> messages-v1-2026-02)"`
 
-	AWSAccessKeyID     string `help:"access key ID to use for AWS services"`
-	AWSSecretAccessKey string `help:"secret access key to use for AWS services"`
-	AWSRegion          string `help:"region to use for AWS services, e.g. us-east-1"`
-
 	DynamoEndpoint    string `help:"DynamoDB service endpoint, e.g. https://dynamodb.us-east-1.amazonaws.com"`
 	DynamoTablePrefix string `help:"prefix to use for DynamoDB tables"`
 
@@ -81,7 +77,6 @@ type Config struct {
 	MetricsReporting    string `validate:"eq=off|eq=basic|eq=advanced"     help:"the level of metrics reporting"`
 	CloudwatchNamespace string `help:"the namespace to use for cloudwatch metrics"`
 	DeploymentID        string `help:"the deployment identifier to use for metrics"`
-	InstanceID          string `help:"the instance identifier to use for metrics"`
 
 	AndroidCredentialsFile string `help:"path to JSON file with FCM service account credentials used to sync Android relayers"`
 	IDObfuscationKey       string `help:"key used to decode obfuscated IDs, as 4 comma separated integers" validate:"omitempty,hexadecimal,len=32"`
@@ -99,8 +94,6 @@ type Config struct {
 
 // NewDefaultConfig returns a new default configuration object
 func NewDefaultConfig() *Config {
-	hostname, _ := os.Hostname()
-
 	// Detect Android/Termux environment
 	isAndroid := false
 	if _, err := os.Stat("/data/data/com.termux"); err == nil {
@@ -113,9 +106,9 @@ func NewDefaultConfig() *Config {
 		DBPoolSize: 36,
 		Valkey:     "valkey://valkey:6379/15",
 
-		PublicAddress:   "",
-		PublicPort:      8090,
-		InternalAddress: "localhost",
+		InternetAddress: "",
+		InternetPort:    8090,
+		InternalAddress: "",
 		InternalPort:    8091,
 		SpoolDir:        "./_spool",
 
@@ -144,10 +137,6 @@ func NewDefaultConfig() *Config {
 		ElasticContactsIndex: "contacts-v1",
 		ElasticMessagesIndex: "messages-v1",
 
-		AWSAccessKeyID:     "",
-		AWSSecretAccessKey: "",
-		AWSRegion:          "us-east-1",
-
 		DynamoEndpoint:    "", // let library generate it
 		DynamoTablePrefix: "",
 
@@ -157,7 +146,6 @@ func NewDefaultConfig() *Config {
 		MetricsReporting:    "off",
 		CloudwatchNamespace: "Mailroom",
 		DeploymentID:        "dev",
-		InstanceID:          hostname,
 
 		IDObfuscationKey: "000A3B1C000D2E3F0001A2B300C0FFEE",
 

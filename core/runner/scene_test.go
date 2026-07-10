@@ -1,23 +1,27 @@
 package runner_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/nyaruka/gocommon/aws/dynamo/dyntest"
+	"github.com/nyaruka/gocommon/centrifugo"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/gocommon/random"
+	"github.com/nyaruka/goflow/core"
+	"github.com/nyaruka/goflow/core/events"
 	"github.com/nyaruka/goflow/flows"
-	"github.com/nyaruka/goflow/flows/events"
 	"github.com/nyaruka/goflow/flows/resumes"
 	"github.com/nyaruka/goflow/flows/triggers"
 	"github.com/nyaruka/goflow/test"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/runner"
+	"github.com/nyaruka/mailroom/v26/core/runner/hooks"
 	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/nyaruka/mailroom/v26/testsuite"
 	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
@@ -201,7 +205,7 @@ func TestSessionWithSubflows(t *testing.T) {
 	assert.Equal(t, scene.Session.UUID(), modelSession.UUID)
 	assert.Equal(t, child.UUID, modelSession.CurrentFlowUUID)
 
-	msg2 := flows.NewMsgIn(testdb.Ann.URN, nil, "yes", nil, "")
+	msg2 := core.NewMsgIn(testdb.Ann.URN, nil, "yes", nil, "")
 	scene = runner.NewScene(mc, contact)
 
 	err = scene.ResumeSession(ctx, rt, oa, modelSession, resumes.NewMsg(events.NewMsgReceived(msg2, "")))
@@ -214,6 +218,48 @@ func TestSessionWithSubflows(t *testing.T) {
 
 	// check we have no contact fires for wait expiration or timeout
 	testsuite.AssertContactFires(t, rt, testdb.Ann.ID, map[string]time.Time{})
+}
+
+func TestBulkCommitPublishesNotifications(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
+
+	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+	require.NoError(t, err)
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	// only the editor is watching their notifications socket
+	adminSocket := fmt.Sprintf("notifications:%s:%s", testdb.Org1.UUID, testdb.Admin.UUID)
+	editorSocket := fmt.Sprintf("notifications:%s:%s", testdb.Org1.UUID, testdb.Editor.UUID)
+	_, err = vc.Do("SET", centrifugo.SubscriptionKey(editorSocket), "1")
+	require.NoError(t, err)
+
+	// commit a scene that creates a tickets:opened notification for each of the admin and editor, attaching them the
+	// same way the ticket-opened handler does
+	mc, contact, _ := testdb.Ann.Load(t, rt, oa)
+	scene := runner.NewScene(mc, contact)
+	scene.AttachPreCommitHook(hooks.InsertNotifications, models.NewTicketsOpenedNotification(oa.OrgID(), testdb.Admin.ID))
+	scene.AttachPreCommitHook(hooks.InsertNotifications, models.NewTicketsOpenedNotification(oa.OrgID(), testdb.Editor.ID))
+
+	require.NoError(t, runner.BulkCommit(ctx, rt, oa, []*runner.Scene{scene}))
+
+	// both notifications were persisted
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM notifications_notification WHERE notification_type = 'tickets:opened'`).Returns(2)
+
+	// the admin isn't watching, so nothing was published to their socket
+	assert.Empty(t, testsuite.CentrifugoHistory(t, rt, adminSocket))
+
+	// but the editor's subscribed socket received the realtime publish, as the same JSON the API serves
+	sent := testsuite.CentrifugoHistory(t, rt, editorSocket)
+	require.Len(t, sent, 1)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(sent[0], &decoded))
+	assert.Equal(t, "tickets:opened", decoded["type"])
+	assert.Equal(t, false, decoded["is_seen"])
 }
 
 func TestSessionFailedStart(t *testing.T) {

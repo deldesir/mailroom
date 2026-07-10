@@ -7,7 +7,7 @@ import (
 	"time"
 
 	valkey "github.com/gomodule/redigo/redis"
-	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
 )
@@ -20,10 +20,6 @@ type EndIncidentsCron struct{}
 
 func (c *EndIncidentsCron) Next(last time.Time) time.Time {
 	return Next(last, time.Minute*3)
-}
-
-func (c *EndIncidentsCron) AllInstances() bool {
-	return false
 }
 
 // EndIncidents checks open incidents and end any that no longer apply
@@ -57,10 +53,10 @@ func (c *EndIncidentsCron) checkWebhookIncident(ctx context.Context, rt *runtime
 		return false, fmt.Errorf("error getting webhook nodes: %w", err)
 	}
 
-	healthyNodeUUIDs := make([]flows.NodeUUID, 0, len(nodeUUIDs))
+	healthyNodeUUIDs := make([]core.NodeUUID, 0, len(nodeUUIDs))
 
 	for _, nodeUUID := range nodeUUIDs {
-		node := models.WebhookNode{UUID: flows.NodeUUID(nodeUUID)}
+		node := models.WebhookNode{UUID: core.NodeUUID(nodeUUID)}
 		healthy, err := node.Healthy(ctx, rt)
 		if err != nil {
 			return false, fmt.Errorf("error getting health of webhook nodes: %w", err)
@@ -92,7 +88,7 @@ func (c *EndIncidentsCron) checkWebhookIncident(ctx context.Context, rt *runtime
 	return false, nil
 }
 
-func (c *EndIncidentsCron) getWebhookIncidentNodes(rt *runtime.Runtime, incident *models.Incident) ([]flows.NodeUUID, error) {
+func (c *EndIncidentsCron) getWebhookIncidentNodes(rt *runtime.Runtime, incident *models.Incident) ([]core.NodeUUID, error) {
 	vc := rt.VK.Get()
 	defer vc.Close()
 
@@ -102,14 +98,14 @@ func (c *EndIncidentsCron) getWebhookIncidentNodes(rt *runtime.Runtime, incident
 		return nil, err
 	}
 
-	nodeUUIDs := make([]flows.NodeUUID, len(nodes))
+	nodeUUIDs := make([]core.NodeUUID, len(nodes))
 	for i := range nodes {
-		nodeUUIDs[i] = flows.NodeUUID(nodes[i])
+		nodeUUIDs[i] = core.NodeUUID(nodes[i])
 	}
 	return nodeUUIDs, nil
 }
 
-func (c *EndIncidentsCron) removeWebhookIncidentNodes(rt *runtime.Runtime, incident *models.Incident, nodes []flows.NodeUUID) error {
+func (c *EndIncidentsCron) removeWebhookIncidentNodes(rt *runtime.Runtime, incident *models.Incident, nodes []core.NodeUUID) error {
 	vc := rt.VK.Get()
 	defer vc.Close()
 
