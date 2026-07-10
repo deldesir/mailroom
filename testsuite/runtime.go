@@ -2,6 +2,7 @@ package testsuite
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/nyaruka/gocommon/aws/dynamo/dyntest"
+	"github.com/nyaruka/gocommon/centrifugo"
 	"github.com/nyaruka/mailroom/v26/core/goflow"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
@@ -66,13 +68,16 @@ func Reset(t *testing.T, rt *runtime.Runtime, what ResetFlag) {
 func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	cfg := runtime.NewDefaultConfig()
 	cfg.DeploymentID = "test"
-	cfg.PublicPort = 8190
+	cfg.InternetPort = 8190
 	cfg.InternalPort = 8191
 	cfg.DB = "postgres://mailroom_test:temba@postgres/mailroom_test?sslmode=disable&Timezone=UTC"
 	cfg.Valkey = "valkey://valkey:6379/10" // use a different DB from the default so a locally-running courier can't pop from queues we're asserting on
 
-	cfg.AWSAccessKeyID = "root"
-	cfg.AWSSecretAccessKey = "tembatemba"
+	// AWS SDK default chain reads these — used by the localstack S3/Dynamo/Cloudwatch clients
+	t.Setenv("AWS_ACCESS_KEY_ID", "root")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "tembatemba")
+	t.Setenv("AWS_REGION", "us-east-1")
+
 	cfg.S3Endpoint = "http://localstack:4566"
 	cfg.S3AttachmentsBucket = "test-attachments"
 	cfg.S3PathStyle = true
@@ -106,6 +111,7 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	dyntest.CreateTables(t, rt.Dynamo.Main.Client(), absPath(dynamoTablesPath), false)
 
 	rt.FCM = &MockFCMClient{ValidTokens: []string{"FCMID3", "FCMID4", "FCMID5"}}
+	rt.Centrifugo = centrifugo.NewService(centrifugo.NewMockClient(), rt.VK)
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
@@ -191,6 +197,20 @@ func resetStorage(t *testing.T, rt *runtime.Runtime) {
 
 	err := rt.S3.EmptyBucket(t.Context(), rt.Config.S3AttachmentsBucket)
 	require.NoError(t, err)
+}
+
+// CentrifugoHistory returns the JSON payloads published to the given Centrifugo channel, oldest first. The runtime's
+// Centrifugo client is a mock so this reads back what the test published rather than hitting a real server.
+func CentrifugoHistory(t *testing.T, rt *runtime.Runtime, channel string) []json.RawMessage {
+	t.Helper()
+
+	var history []json.RawMessage
+	for _, p := range rt.Centrifugo.Client.(*centrifugo.MockClient).Publications() {
+		if p.Channel == channel {
+			history = append(history, p.Data.(json.RawMessage)) // the mock records data as marshaled JSON
+		}
+	}
+	return history
 }
 
 func createBucket(t *testing.T, rt *runtime.Runtime, bucket string) {

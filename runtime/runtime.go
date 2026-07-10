@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
-	"github.com/centrifugal/gocent/v3"
 	valkey "github.com/gomodule/redigo/redis"
 	_ "github.com/lib/pq"
 	"github.com/nyaruka/gocommon/aws/cwatch"
 	"github.com/nyaruka/gocommon/aws/s3x"
+	"github.com/nyaruka/gocommon/centrifugo"
 	"github.com/nyaruka/vkutil"
 	"github.com/vinovest/sqlx"
 )
@@ -29,7 +29,7 @@ type Runtime struct {
 	Dynamo     *Dynamo
 	CW         *cwatch.Service
 	FCM        FCMClient
-	Centrifugo *gocent.Client
+	Centrifugo *centrifugo.Service
 
 	Queues *Queues
 	Stats  *StatsCollector
@@ -47,6 +47,8 @@ type FCMClient interface {
 
 func NewRuntime(cfg *Config) (*Runtime, error) {
 	rt := &Runtime{Config: cfg}
+
+	ctx := context.Background()
 
 	var err error
 
@@ -80,7 +82,7 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 	// explicitly configured. Skip client creation so the AWS SDK never resolves
 	// credentials (no IMDS probe).
 	if cfg.S3AttachmentsBucket != "" {
-		rt.S3, err = s3x.NewService(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.S3Endpoint, cfg.S3PathStyle)
+		rt.S3, err = s3x.NewService(ctx, cfg.S3Endpoint, cfg.S3PathStyle)
 		if err != nil {
 			return nil, fmt.Errorf("error creating S3 service: %w", err)
 		}
@@ -91,10 +93,12 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 		return nil, err
 	}
 
-	rt.CW, err = cwatch.NewService(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSRegion, cfg.CloudwatchNamespace, cfg.DeploymentID)
+	rt.CW, err = cwatch.NewService(ctx, cfg.CloudwatchNamespace, cfg.DeploymentID)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Cloudwatch service: %w", err)
 	}
+
+	rt.Centrifugo = centrifugo.NewService(centrifugo.NewClient(cfg.CentrifugoEndpoint, cfg.CentrifugoKey), rt.VK)
 
 	rt.Queues = newQueues(cfg)
 	rt.Stats = NewStatsCollector(rt.VK, cfg.LatencyExcludedOrgs)

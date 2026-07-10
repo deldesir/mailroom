@@ -10,17 +10,12 @@ import (
 
 	"github.com/appleboy/go-fcm"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	"github.com/centrifugal/gocent/v3"
 	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/aws/cwatch"
 	"github.com/nyaruka/gocommon/aws/dynamo"
 	"github.com/nyaruka/mailroom/v26/core/crons"
 	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/nyaruka/mailroom/v26/web"
-)
-
-const (
-	appNodesRunningKey = "app-nodes:running"
 )
 
 type Service struct {
@@ -64,30 +59,28 @@ func (s *Service) Start() error {
 
 	log := slog.With("comp", "mailroom")
 
-	// test Postgres
+	// we can't function at all without Postgres and Valkey so unreachable is fatal, whereas writes to services
+	// like DynamoDB and Elastic are spooled so we can start without them and recover later
 	if err := checkDBConnection(s.rt.DB.DB); err != nil {
-		log.Error("postgres not reachable", "error", err)
-	} else {
-		log.Info("postgres ok")
+		return fmt.Errorf("postgres not reachable: %w", err)
 	}
+	log.Info("postgres ok")
+
 	if s.rt.ReadonlyDB != s.rt.DB.DB {
 		if err := checkDBConnection(s.rt.ReadonlyDB); err != nil {
-			log.Error("readonly db not reachable", "error", err)
-		} else {
-			log.Info("readonly db ok")
+			return fmt.Errorf("readonly db not reachable: %w", err)
 		}
+		log.Info("readonly db ok")
 	} else {
 		log.Warn("no distinct readonly db configured")
 	}
 
-	// test Valkey
 	vc := s.rt.VK.Get()
 	defer vc.Close()
-	if _, err := vc.Do("PING"); err != nil {
-		log.Error("valkey not reachable", "error", err)
-	} else {
-		log.Info("valkey ok")
+	if _, err := valkey.DoWithTimeout(vc, 5*time.Second, "PING"); err != nil {
+		return fmt.Errorf("valkey not reachable: %w", err)
 	}
+	log.Info("valkey ok")
 
 	// test DynamoDB tables (optional in nanoRP mode)
 	if s.rt.Dynamo != nil && s.rt.Dynamo.Main != nil && s.rt.Dynamo.Main.Client() != nil {
@@ -135,13 +128,8 @@ func (s *Service) Start() error {
 		log.Warn("fcm not configured, no android syncing")
 	}
 
-	s.rt.Centrifugo = gocent.New(gocent.Config{
-		Addr: c.CentrifugoEndpoint,
-		Key:  c.CentrifugoKey,
-	})
-
-	// test Centrifugo - its info API confirms both that the server is reachable and that our API key is accepted
-	if _, err := s.rt.Centrifugo.Info(s.ctx); err != nil {
+	// the Centrifugo client is built by the runtime; confirm here that the server is reachable and accepts our key
+	if err := s.rt.Centrifugo.Client.Info(s.ctx); err != nil {
 		log.Error("centrifugo not reachable", "error", err)
 	} else {
 		log.Info("centrifugo ok")
@@ -166,43 +154,8 @@ func (s *Service) Start() error {
 
 	s.startMetricsReporter(time.Minute)
 
-	if err := s.checkLastShutdown(s.ctx); err != nil {
-		return err
-	}
-
 	log.Info("mailroom started", "domain", c.Domain)
 
-	return nil
-}
-
-func (s *Service) checkLastShutdown(ctx context.Context) error {
-	nodeID := fmt.Sprintf("mailroom:%s", s.rt.Config.InstanceID)
-	vc := s.rt.VK.Get()
-	defer vc.Close()
-
-	exists, err := valkey.Bool(valkey.DoContext(vc, ctx, "HEXISTS", appNodesRunningKey, nodeID))
-	if err != nil {
-		return fmt.Errorf("error checking last shutdown: %w", err)
-	}
-
-	if exists {
-		slog.Error("node did not shutdown cleanly last time")
-	} else {
-		if _, err := valkey.DoContext(vc, ctx, "HSET", appNodesRunningKey, nodeID, time.Now().UTC().Format(time.RFC3339)); err != nil {
-			return fmt.Errorf("error setting app node state: %w", err)
-		}
-	}
-	return nil
-}
-
-func (s *Service) recordShutdown(ctx context.Context) error {
-	nodeID := fmt.Sprintf("mailroom:%s", s.rt.Config.InstanceID)
-	vc := s.rt.VK.Get()
-	defer vc.Close()
-
-	if _, err := valkey.DoContext(vc, ctx, "HDEL", appNodesRunningKey, nodeID); err != nil {
-		return fmt.Errorf("error recording shutdown: %w", err)
-	}
 	return nil
 }
 
@@ -255,25 +208,28 @@ func (s *Service) reportMetrics(ctx context.Context) (int, error) {
 	s.dbWaitDuration = dbStats.WaitDuration
 	s.vkWaitDuration = vkStats.WaitDuration
 
-	hostDim := cwatch.Dimension("Host", s.rt.Config.InstanceID)
+	// instance level metrics are published without an instance dimension so that instances (which come and go with
+	// deploys) are just samples of the same metric, and can be aggregated with statistics like Max and Sum
 	metrics = append(metrics,
-		cwatch.Datum("DBConnectionsInUse", float64(dbStats.InUse), types.StandardUnitCount, hostDim),
-		cwatch.Datum("DBConnectionWaitDuration", float64(dbWaitDurationInPeriod)/float64(time.Second), types.StandardUnitSeconds, hostDim),
-		cwatch.Datum("ValkeyConnectionsInUse", float64(vkStats.ActiveCount), types.StandardUnitCount, hostDim),
-		cwatch.Datum("ValkeyConnectionsWaitDuration", float64(vkWaitDurationInPeriod)/float64(time.Second), types.StandardUnitSeconds, hostDim),
+		cwatch.Datum("DBConnectionsInUse", float64(dbStats.InUse), types.StandardUnitCount),
+		cwatch.Datum("DBConnectionWaitDuration", float64(dbWaitDurationInPeriod)/float64(time.Second), types.StandardUnitSeconds),
+		cwatch.Datum("ValkeyConnectionsInUse", float64(vkStats.ActiveCount), types.StandardUnitCount),
+		cwatch.Datum("ValkeyConnectionsWaitDuration", float64(vkWaitDurationInPeriod)/float64(time.Second), types.StandardUnitSeconds),
 		cwatch.Datum("QueuedTasks", float64(realtimeSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "realtime")),
 		cwatch.Datum("QueuedTasks", float64(batchSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "batch")),
 		cwatch.Datum("QueuedTasks", float64(throttledSize), types.StandardUnitCount, cwatch.Dimension("QueueName", "throttled")),
 	)
+
+	// nanoRP: the Dynamo and Elastic spools only exist when those backends are enabled
 	if s.rt.Dynamo.Spool != nil {
 		metrics = append(metrics,
-			cwatch.Datum("DynamoSpooledItems", float64(s.rt.Dynamo.Spool.Size()), types.StandardUnitCount, hostDim),
+			cwatch.Datum("DynamoSpooledItems", float64(s.rt.Dynamo.Spool.Size()), types.StandardUnitCount),
 		)
 	}
 
 	if s.rt.ES.Spool != nil {
 		metrics = append(metrics,
-			cwatch.Datum("ElasticSpooledItems", float64(s.rt.ES.Spool.Size()), types.StandardUnitCount, hostDim),
+			cwatch.Datum("ElasticSpooledItems", float64(s.rt.ES.Spool.Size()), types.StandardUnitCount),
 		)
 	}
 
@@ -306,16 +262,12 @@ func (s *Service) Stop() error {
 
 	log.Info("runtime stopped")
 
-	if err := s.recordShutdown(context.TODO()); err != nil {
-		return fmt.Errorf("error recording shutdown: %w", err)
-	}
-
 	log.Info("mailroom stopped")
 	return nil
 }
 
 func checkDBConnection(db *sql.DB) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err := db.PingContext(ctx)
 	cancel()
 

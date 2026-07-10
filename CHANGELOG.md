@@ -1,3 +1,53 @@
+v26.3.11 (2026-07-09)
+-------------------------
+ * Update to goflow v0.278.4
+ * Update to gocommon v1.89.4 which resolves AWS region for S3 URLs internally
+
+v26.3.10 (2026-07-07)
+-------------------------
+ * Fail fast when no AWS region is resolved and use it for S3 object URLs
+
+v26.3.9 (2026-07-07)
+-------------------------
+ * Update to gocommon v1.88.0 which reworks spools
+ * Fail startup if postgres or valkey are unreachable
+ * Also report tasks that reach 75% of their own timeout
+ * Use fixed 120s threshold for reporting slow tasks
+
+v26.3.8 (2026-07-06)
+-------------------------
+ * Remove InstanceID config setting
+ * Publish instance level metrics without a Host dimension
+ * Remove app node registry
+ * Remove allInstances option from crons
+
+v26.3.7 (2026-07-06)
+-------------------------
+ * Rename PublicAddress/PublicPort config to InternetAddress/InternetPort
+ * Change default internal address to bind all interfaces
+ * Update gocommon to v1.86.2
+
+v26.3.6 (2026-07-06)
+-------------------------
+ * Address notification sockets by user UUID when publishing external notifications
+ * Update to goflow v0.278.1
+ * Use gocommon centrifugo client so tests can use a mock instead of a real server
+
+v26.3.5 (2026-07-02)
+-------------------------
+ * Resolve single UUID contact queries from the database instead of Elastic
+
+v26.3.4 (2026-07-01)
+-------------------------
+ * Update dependencies
+ * Add endpoint to publish externally-created notifications to realtime sockets
+ * Resolve AWS credentials and region from standard AWS SDK chain
+
+v26.3.3 (2026-07-01)
+-------------------------
+ * Run a real Centrifugo in tests instead of mocking it
+ * Publish notifications to realtime sockets
+
 v26.3.2 (2026-06-25)
 -------------------------
  * Route per-ticket history events to ticket-scoped realtime channels
