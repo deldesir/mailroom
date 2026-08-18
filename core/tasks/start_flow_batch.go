@@ -30,6 +30,8 @@ func init() {
 
 // StartFlowBatch is the start flow batch task
 type StartFlowBatch struct {
+	BatchTask
+
 	*models.FlowStartBatch
 }
 
@@ -46,7 +48,7 @@ func (t *StartFlowBatch) WithAssets() models.Refresh {
 	return models.RefreshNone
 }
 
-func (t *StartFlowBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
+func (t *StartFlowBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, taskID TaskID) error {
 	var start *models.FlowStart
 	var err error
 
@@ -62,11 +64,12 @@ func (t *StartFlowBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *m
 
 	// if this start was interrupted, we're done
 	if start.Status == models.StartStatusInterrupted {
+		t.RecordComplete(ctx, rt, taskID)
 		return nil
 	}
 
-	// if this is our first batch, mark as started
-	if t.IsFirst {
+	// if we're the first batch of the set to start, mark the start itself as started
+	if t.RecordStarted(ctx, rt) {
 		if err := start.SetStarted(ctx, rt.DB); err != nil {
 			return fmt.Errorf("error marking start as started: %w", err)
 		}
@@ -76,8 +79,8 @@ func (t *StartFlowBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *m
 		return err
 	}
 
-	// if this is our last batch, mark start as done
-	if t.IsLast {
+	// mark start as done if this was the last batch to complete
+	if t.RecordComplete(ctx, rt, taskID) {
 		if err := start.SetCompleted(ctx, rt.DB); err != nil {
 			return fmt.Errorf("error marking start as complete: %w", err)
 		}
@@ -97,7 +100,7 @@ func (t *StartFlowBatch) start(ctx context.Context, rt *runtime.Runtime, oa *mod
 	}
 
 	// get the user that created this flow start if there was one
-	var flowUser *flows.User
+	var flowUser *core.User
 	if start.CreatedByID != models.NilUserID {
 		user := oa.UserByID(start.CreatedByID)
 		if user != nil {
@@ -142,22 +145,22 @@ func (t *StartFlowBatch) start(ctx context.Context, rt *runtime.Runtime, oa *mod
 	}
 
 	if flow.FlowType() == models.FlowTypeVoice {
-		contacts, err := models.LoadContacts(ctx, rt.ReadonlyDB, oa, t.ContactIDs)
+		mcs, err := models.LoadContacts(ctx, rt.ReadonlyDB, oa, t.ContactIDs)
 		if err != nil {
 			return fmt.Errorf("error loading contacts: %w", err)
 		}
 
-		// for each contacts, request a call start
-		for _, contact := range contacts {
+		// for each contact, request a call start
+		for _, mc := range mcs {
 			ctx, cancel := context.WithTimeout(ctx, time.Minute)
-			call, err := ivr.RequestCall(ctx, rt, oa, contact, triggerBuilder())
+			call, err := ivr.RequestCall(ctx, rt, oa, mc, triggerBuilder())
 			cancel()
 			if err != nil {
-				slog.Error("error requesting call for flow start", "contact", contact.UUID(), "start_id", start.ID, "error", err)
+				slog.Error("error requesting call for flow start", "contact", mc.UUID(), "start_id", start.ID, "error", err)
 				continue
 			}
 			if call == nil {
-				slog.Debug("call start skipped, no suitable channel", "contact", contact.UUID(), "start_id", start.ID)
+				slog.Debug("call start skipped, no suitable channel", "contact", mc.UUID(), "start_id", start.ID)
 				continue
 			}
 		}

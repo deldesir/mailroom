@@ -1,3 +1,189 @@
+v26.3.46 (2026-08-17)
+-------------------------
+ * Update to goflow v0.293.0 and block webhook calls to configured domains instead of allowing them with a warning
+ * Allow orgs with the unrestricted_webhooks feature to call otherwise blocked domains
+ * Rename WebhooksRestrictedDomains config to WebhooksBlockedDomains
+ * Add uuid field to Trigger model
+
+v26.3.45 (2026-08-17)
+-------------------------
+ * Update to goflow v0.292.0 and compact sessions before persisting output
+ * Add engine limit on runs per session and make engine limits non-configurable
+
+v26.3.44 (2026-08-13)
+-------------------------
+ * Don't attach calls to non-voice sessions started by incoming call triggers
+ * Ignore calls attached to non-voice sessions when reading them
+
+v26.3.43 (2026-08-12)
+-------------------------
+ * Always construct LLM services with the runtime's services client
+ * Download IVR media with the service's own HTTP client
+
+v26.3.42 (2026-08-12)
+-------------------------
+ * Use shared svclogs package and context-scoped HTTP tracing from gocommon
+
+v26.3.41 (2026-08-12)
+-------------------------
+ * Add embeddings service and text chunker for the knowledge base
+ * Require an embeddings service to be configured
+ * Move service lifecycle and task workers out of the root package
+ * Fix flaky de-indexing test by waiting for asynchronous message deletion
+
+v26.3.40 (2026-08-11)
+-------------------------
+ * Use dynamodb-local instead of localstack for DynamoDB in tests
+ * Update dependencies
+
+v26.3.39 (2026-08-05)
+-------------------------
+ * Re-index shell contact in Elastic after its URN is reassigned
+ * Update to goflow v0.290.1
+ * Run test packages in parallel, giving each test binary its own isolated valkey, elastic, dynamo and S3 state
+
+v26.3.38 (2026-08-05)
+-------------------------
+ * Remove support for opt-in/opt-out triggers, channel events, and opt-ins on broadcasts and messages
+ * Update to goflow v0.290.0
+ * Claim WhatsApp BSUID URNs from shell contacts when appending to another contact
+ * Rework tests to use per-binary databases cloned from a template to prevent shared state issues
+
+v26.3.37 (2026-08-04)
+-------------------------
+ * Change WrapEventHandler to pass the wrapped handler as the final arg of the new handler
+
+v26.3.36 (2026-08-03)
+-------------------------
+ * Remove unused tracking of deprecated context usage and make warning event handling a noop
+
+v26.3.35 (2026-08-03)
+-------------------------
+ * Add runner.WrapEventHandler to allow extending of event handling
+
+v26.3.34 (2026-08-03)
+-------------------------
+ * Update to goflow v0.289.1
+ * Add WebhooksRestrictedDomains config option for webhook domains that should generate warnings
+ * Allow cmd entry points to take customized config defaults
+
+v26.3.33 (2026-08-03)
+-------------------------
+ * Fix import records being dropped when two records resolve to the same contact
+ * Remove transitional batch tracker code no longer needed post deploy
+ * Update test database dump for latest rapidpro schema
+ * Update to phonenumbers v2.0.6
+
+v26.3.32 (2026-07-30)
+-------------------------
+ * Make batch trackers also count completions recorded under pre-rename keys
+ * Update to goflow v0.288.3
+
+v26.3.31 (2026-07-30)
+-------------------------
+ * Rework batch trackers to use per-owner started and batches keys
+ * Remove legacy batch completion mechanisms replaced by batch trackers
+ * Add workspace realtime socket for asset name changes
+
+v26.3.30 (2026-07-30)
+-------------------------
+ * Use batch trackers to make completion decisions for starts, broadcasts, imports and group populations
+
+v26.3.29 (2026-07-29)
+-------------------------
+ * Update to goflow v0.288.2
+
+v26.3.28 (2026-07-29)
+-------------------------
+ * Add batch trackers which record batch task completion but aren't yet read
+
+v26.3.27 (2026-07-29)
+-------------------------
+ * Pass queued task IDs into task Perform methods and add owner UUIDs to batch tasks
+ * Publish flow activity change notifications to per-flow sockets
+ * Update to goflow v0.288.1
+ * Update test database dump for latest rapidpro schema
+
+v26.3.26 (2026-07-28)
+-------------------------
+ * Update to goflow v0.287.0 and remove handling of removed optin_requested event type
+ * Remove unreachable opt-in request handling from courier message creation
+ * Update to vkutil v0.22.0 and gocommon v1.92.0 which now provides the fair queue as queues.FairV2
+ * Update test database dump for latest rapidpro schema
+
+v26.3.25 (2026-07-27)
+-------------------------
+ * Update to goflow v0.286.1 and pass payload of incoming messages to the engine
+ * Fix contact imports being marked complete even when batches failed
+ * Improve logging of contact import batch failures
+ * Report all modifier errors against contact import records
+
+v26.3.24 (2026-07-27)
+-------------------------
+ * Update to goflow v0.285.0 and gocommon v1.91.1
+ * Update dependencies including golang-jwt/jwt v5 and openai-go v3
+ * Use distinct log message for webhook request size limit errors
+
+v26.3.23 (2026-07-23)
+-------------------------
+ * Update to goflow v0.284.3
+ * Report webhook size limit errors for operator visibility
+
+v26.3.22 (2026-07-22)
+-------------------------
+ * Remove unused PO translation import/export endpoints
+
+v26.3.21 (2026-07-22)
+-------------------------
+ * Update to goflow v0.284.1
+
+v26.3.20 (2026-07-22)
+-------------------------
+ * Update to goflow v0.284.0
+
+v26.3.19 (2026-07-21)
+-------------------------
+ * Update to goflow v0.283.4
+
+v26.3.18 (2026-07-21)
+-------------------------
+ * Update to goflow v0.283.3
+
+v26.3.17 (2026-07-21)
+-------------------------
+ * Update to goflow v0.283.1 and report expression:too_complex errors to Sentry
+ * Update to gocommon v1.89.7
+ * Publish ephemeral contact events to history sockets, incl new contact_flow_changed event
+ * Guard against warning events without a step in handleWarning
+
+v26.3.16 (2026-07-16)
+-------------------------
+ * Accept typing_stopped publications on history sockets
+ * Resolve typing indicator channel and URN server-side like reply routing, so clients only send the event type and msg external ID
+
+v26.3.15 (2026-07-16)
+-------------------------
+ * Add internal socket publish endpoint which authorizes agent typing publications as a centrifugo publish proxy and sends them to courier
+ * Update to goflow v0.281.0 which adds routing fields to typing events
+ * Update to gocommon v1.89.5
+
+v26.3.14 (2026-07-14)
+-------------------------
+ * Update to goflow v0.280.0
+ * Use consistent naming for model vs engine contacts
+ * Replace patrickmn/go-cache with gocommon's cache.Local for org assets
+ * Stop building darwin release binaries
+
+v26.3.13 (2026-07-13)
+-------------------------
+ * Remove unused web endpoints
+
+v26.3.12 (2026-07-13)
+-------------------------
+ * Update to goflow v0.279.1
+ * Update test database dump for latest rapidpro migrations
+ * Resolve testsuite testdata paths relative to the testsuite package
+
 v26.3.11 (2026-07-09)
 -------------------------
  * Update to goflow v0.278.4

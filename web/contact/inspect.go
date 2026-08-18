@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/nyaruka/goflow/assets"
-	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/nyaruka/mailroom/v26/web"
@@ -77,34 +77,29 @@ func handleInspect(ctx context.Context, rt *runtime.Runtime, r *inspectRequest) 
 		return nil, 0, fmt.Errorf("error loading contact: %w", err)
 	}
 
-	response := make(map[flows.ContactID]*contactInfo, len(contacts))
+	response := make(map[core.ContactID]*contactInfo, len(contacts))
 
-	for _, c := range contacts {
-		flowContact, err := c.EngineContact(oa)
+	for _, mc := range contacts {
+		contact, err := mc.EngineContact(oa)
 		if err != nil {
-			return nil, 0, fmt.Errorf("error creating flow contact: %w", err)
+			return nil, 0, fmt.Errorf("error creating engine contact: %w", err)
 		}
 
-		// first add the URNs which have a corresponding channel (engine considers these sendable)
-		routes := flowContact.ResolveRoutes(true)
-		urnsSeen := make(map[string]bool, len(routes))
-		urnInfos := make([]urnInfo, 0, len(flowContact.URNs()))
+		// URNs which have a corresponding channel (engine considers these sendable) come first
+		channels := oa.SessionAssets().Channels()
+		sendable := make([]urnInfo, 0, len(contact.URNs()))
+		unsendable := make([]urnInfo, 0, len(contact.URNs()))
 
-		for _, r := range routes {
-			scheme, path, _, display := r.URN.ToParts()
-			urnInfos = append(urnInfos, urnInfo{Channel: r.Channel.Reference(), Scheme: scheme, Path: path, Display: display})
-			urnsSeen[scheme+":"+path] = true
-		}
-
-		// then the rest of the unsendable URNs
-		for _, u := range flowContact.URNs() {
-			scheme, path, display := u.Scheme, u.Path, u.Display
-			if !urnsSeen[scheme+":"+path] {
-				urnInfos = append(urnInfos, urnInfo{Channel: nil, Scheme: scheme, Path: path, Display: display})
+		for _, u := range contact.URNs() {
+			if ch := channels.GetForURN(u, assets.ChannelRoleSend); ch != nil {
+				sendable = append(sendable, urnInfo{Channel: ch.Reference(), Scheme: u.Scheme, Path: u.Path})
+			} else {
+				unsendable = append(unsendable, urnInfo{Channel: nil, Scheme: u.Scheme, Path: u.Path, Display: u.Display})
 			}
 		}
+		urnInfos := append(sendable, unsendable...)
 
-		response[flowContact.ID()] = &contactInfo{URNs: urnInfos}
+		response[contact.ID()] = &contactInfo{URNs: urnInfos}
 	}
 
 	return response, http.StatusOK, nil

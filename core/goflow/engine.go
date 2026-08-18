@@ -9,11 +9,21 @@ import (
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/goflow/core/events"
+	"github.com/nyaruka/goflow/excellent"
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/flows/engine"
-	"github.com/nyaruka/goflow/services/webhooks"
 	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/shopspring/decimal"
+)
+
+const (
+	// MaxContactNameLength is the maximum length of a contact name (matches the database column)
+	MaxContactNameLength = 128
+
+	maxStepsPerSprint    = 250 // the maximum number of steps allowed per engine sprint
+	maxSprintsPerSession = 250 // the maximum number of sprints allowed per engine session
+	maxRunsPerSession    = 250 // the maximum number of runs allowed per engine session
+	maxValueLength       = 640 // the maximum size in characters for contact field values and run result values
 )
 
 var eng, simulator flows.Engine
@@ -24,6 +34,7 @@ var claimURN func(*runtime.Runtime) flows.ClaimURNCallback
 var emailFactory func(*runtime.Runtime) engine.EmailServiceFactory
 var llmFactory func(*runtime.Runtime) engine.LLMServiceFactory
 var airtimeFactory func(*runtime.Runtime) engine.AirtimeServiceFactory
+var webhookFactory func(*runtime.Runtime, map[string]string) engine.WebhookServiceFactory
 var llmPrompts map[string]*template.Template
 
 func Reset() {
@@ -57,6 +68,12 @@ func RegisterAirtimeServiceFactory(f func(*runtime.Runtime) engine.AirtimeServic
 	airtimeFactory = f
 }
 
+// RegisterWebhookServiceFactory can be used by outside callers to register a webhook service factory
+// for use by the engine. It takes the default headers as these vary between the real and simulator engines.
+func RegisterWebhookServiceFactory(f func(*runtime.Runtime, map[string]string) engine.WebhookServiceFactory) {
+	webhookFactory = f
+}
+
 // RegisterAirtimeServiceFactory can be used by outside callers to register a airtime serivce factory
 // for use by the engine
 func RegisterLLMPrompts(p map[string]*template.Template) {
@@ -83,14 +100,18 @@ func Engine(rt *runtime.Runtime) flows.Engine {
 
 		eng = engine.NewBuilder().
 			WithHTTPClient(rt.HTTP.Engine).
-			WithWebhookServiceFactory(webhooks.NewServiceFactory(webhookHeaders, rt.Config.WebhooksMaxBodyBytes)).
+			WithWebhookServiceFactory(webhookFactory(rt, webhookHeaders)).
 			WithLLMServiceFactory(llmFactory(rt)).
 			WithEmailServiceFactory(emailFactory(rt)).
 			WithAirtimeServiceFactory(airtimeFactory(rt)).
-			WithMaxStepsPerSprint(rt.Config.MaxStepsPerSprint).
-			WithMaxSprintsPerSession(rt.Config.MaxSprintsPerSession).
-			WithMaxFieldChars(rt.Config.MaxValueLength).
-			WithMaxResultChars(rt.Config.MaxValueLength).
+			WithEvaluationBudget(excellent.DefaultEvaluationBudget).
+			WithMaxStepsPerSprint(maxStepsPerSprint).
+			WithMaxSprintsPerSession(maxSprintsPerSession).
+			WithMaxRunsPerSession(maxRunsPerSession).
+			WithMaxNameChars(MaxContactNameLength).
+			WithMaxFieldChars(maxValueLength).
+			WithMaxResultChars(maxValueLength).
+			WithWebhookLimits(256*1024, rt.Config.WebhooksMaxBodyBytes).
 			WithLLMPrompts(llmPrompts).
 			WithCheckSendable(checkSendable(rt)).
 			WithClaimURN(claimURN(rt)).
@@ -110,14 +131,18 @@ func Simulator(ctx context.Context, rt *runtime.Runtime) flows.Engine {
 
 		simulator = engine.NewBuilder().
 			WithHTTPClient(rt.HTTP.Simulator).
-			WithWebhookServiceFactory(webhooks.NewServiceFactory(webhookHeaders, rt.Config.WebhooksMaxBodyBytes)).
+			WithWebhookServiceFactory(webhookFactory(rt, webhookHeaders)).
 			WithLLMServiceFactory(llmFactory(rt)).                     // simulated sessions do real LLM calls
 			WithEmailServiceFactory(simulatorEmailServiceFactory).     // but faked emails
 			WithAirtimeServiceFactory(simulatorAirtimeServiceFactory). // and faked airtime transfers
-			WithMaxStepsPerSprint(rt.Config.MaxStepsPerSprint).
-			WithMaxSprintsPerSession(rt.Config.MaxSprintsPerSession).
-			WithMaxFieldChars(rt.Config.MaxValueLength).
-			WithMaxResultChars(rt.Config.MaxValueLength).
+			WithEvaluationBudget(excellent.DefaultEvaluationBudget).
+			WithMaxStepsPerSprint(maxStepsPerSprint).
+			WithMaxSprintsPerSession(maxSprintsPerSession).
+			WithMaxRunsPerSession(maxRunsPerSession).
+			WithMaxNameChars(MaxContactNameLength).
+			WithMaxFieldChars(maxValueLength).
+			WithMaxResultChars(maxValueLength).
+			WithWebhookLimits(256*1024, rt.Config.WebhooksMaxBodyBytes).
 			WithLLMPrompts(llmPrompts).
 			Build()
 	})
@@ -131,7 +156,7 @@ func simulatorEmailServiceFactory(flows.SessionAssets) (flows.EmailService, erro
 
 type simulatorEmailService struct{}
 
-func (s *simulatorEmailService) Send(addresses []string, subject, body string) error {
+func (s *simulatorEmailService) Send(ctx context.Context, addresses []string, subject, body string) error {
 	return nil
 }
 

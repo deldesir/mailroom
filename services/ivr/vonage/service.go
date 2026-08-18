@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/buger/jsonparser"
-	"github.com/golang-jwt/jwt"
+	"github.com/golang-jwt/jwt/v5"
 	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/httpx"
 	"github.com/nyaruka/gocommon/jsonx"
@@ -35,7 +35,7 @@ import (
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/runner"
 	"github.com/nyaruka/mailroom/v26/runtime"
-	"github.com/nyaruka/mailroom/v26/utils/svclogs"
+	mrutils "github.com/nyaruka/mailroom/v26/utils"
 )
 
 // IgnoreSignatures sets whether we ignore signatures (for unit tests)
@@ -165,7 +165,7 @@ func (s *service) DownloadMedia(url string) (*http.Response, error) {
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	return http.DefaultClient.Do(req)
+	return s.httpClient.Do(req)
 }
 
 func (s *service) CheckStartRequest(r *http.Request) models.CallError {
@@ -656,7 +656,8 @@ func (s *service) makeRequest(method string, sendURL string, body any) (*httpx.T
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
-	return svclogs.TraceRequest(s.httpClient.Transport, s.httpClient.Timeout, req)
+	trace, _, err := mrutils.DoTraced(s.httpClient, req)
+	return trace, err
 }
 
 // calculateSignature calculates a signature for the passed in URL
@@ -702,15 +703,15 @@ func (s *service) calculateSignature(u string) string {
 
 type jwtClaims struct {
 	ApplicationID string `json:"application_id"`
-	jwt.StandardClaims
+	jwt.RegisteredClaims
 }
 
 func (s *service) generateToken() (string, error) {
 	claims := jwtClaims{
 		s.appID,
-		jwt.StandardClaims{
-			Id:       strconv.Itoa(rand.Int()),
-			IssuedAt: time.Now().UTC().Unix(),
+		jwt.RegisteredClaims{
+			ID:       strconv.Itoa(rand.Int()),
+			IssuedAt: jwt.NewNumericDate(time.Now().UTC()),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.GetSigningMethod("RS256"), claims)

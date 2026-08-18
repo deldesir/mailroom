@@ -25,17 +25,14 @@ import (
 func TestNewCourierMsg(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey|testsuite.ResetDynamo)
-
-	// create an opt-in and a new contact with an auth token for it
-	optInID := testdb.InsertOptIn(t, rt, testdb.Org1, "45aec4dd-945f-4511-878f-7d8516fbd336", "Joke Of The Day").ID
+	// create a new contact with a URN with an auth token
 	testFred := testdb.InsertContact(t, rt, testdb.Org1, "fed2d179-73ac-44fd-b838-7f866fef0a3a", "Fred", "eng", models.ContactStatusActive)
-	testdb.InsertContactURN(t, rt, testdb.Org1, testFred, "tel:+593979123456", 1000, map[string]string{fmt.Sprintf("optin:%d", optInID): "sesame"})
+	testdb.InsertContactURN(t, rt, testdb.Org1, testFred, "tel:+593979123456", 1000, map[string]string{"default": "sesame"})
 
 	// add a second URN to Ann so we can test other_urns
 	testdb.InsertContactURN(t, rt, testdb.Org1, testdb.Ann, "whatsapp:16055741111", 100, nil)
 
-	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshOptIns)
+	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	require.NoError(t, err)
 	require.False(t, oa.Org().Suspended())
 
@@ -45,7 +42,6 @@ func TestNewCourierMsg(t *testing.T) {
 	twilio := oa.ChannelByUUID(testdb.TwilioChannel.UUID)
 	facebook := oa.ChannelByUUID(testdb.FacebookChannel.UUID)
 	flow, _ := oa.FlowByID(testdb.Favorites.ID)
-	optIn := oa.OptInByID(optInID)
 	annURN, _ := annURNs[0].Encode(oa)
 	fredURN, _ := fredURNs[0].Encode(oa)
 
@@ -154,13 +150,13 @@ func TestNewCourierMsg(t *testing.T) {
 	}`, string(jsonx.MustMarshal(msgEvent2.CreatedOn().In(time.UTC))), session.UUID(), sprint.UUID(), msg2.UUID()))
 
 	// try a broadcast message which won't have session and flow fields set and won't be high priority
-	bcast := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401c", `eng`, map[i18n.Language]string{`eng`: "Blast"}, nil, models.NilScheduleID, []*testdb.Contact{testFred}, nil)
+	bcast := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401c", `eng`, map[i18n.Language]string{`eng`: "Blast"}, models.NilScheduleID, []*testdb.Contact{testFred}, nil)
 	msgEvent3 := events.NewMsgCreated(
 		core.NewMsgOut(fredURN, assets.NewChannelReference(testdb.TwilioChannel.UUID, "Test Channel"), &core.MsgContent{Text: "Blast"}, nil, i18n.NilLocale, ""),
 		bcast.UUID,
 		"",
 	)
-	msg3, err := models.NewOutgoingBroadcastMsg(rt, oa.Org(), twilio, fred, msgEvent3, &models.Broadcast{ID: bcast.ID, OptInID: optInID, CreatedByID: testdb.Admin.ID})
+	msg3, err := models.NewOutgoingBroadcastMsg(rt, oa.Org(), twilio, fred, msgEvent3, &models.Broadcast{ID: bcast.ID, CreatedByID: testdb.Admin.ID})
 	require.NoError(t, err)
 
 	err = models.InsertMessages(ctx, rt.DB, []*models.Msg{msg3.Msg})
@@ -182,39 +178,6 @@ func TestNewCourierMsg(t *testing.T) {
 		"user_id": %d,
 		"uuid": "%s"
 	}`, string(jsonx.MustMarshal(msgEvent3.CreatedOn().In(time.UTC))), testdb.Admin.ID, msg3.UUID()))
-
-	optInEvent := events.NewOptInRequested(session.Assets().OptIns().Get(optIn.UUID()).Reference(), twilio.Reference(), "tel:+16055741111")
-	msg4 := models.NewOutgoingOptInMsg(rt, testdb.Org1.ID, ann, flow, optIn, twilio, optInEvent, &models.MsgInRef{UUID: in1.UUID, ExtID: "EX123"})
-	err = models.InsertMessages(ctx, rt.DB, []*models.Msg{msg4.Msg})
-	require.NoError(t, err)
-
-	msg4.URN = annURNs[0]
-	msg4.Session = session
-	msg4.SprintUUID = sprint.UUID()
-
-	createAndAssertCourierMsg(t, oa, msg4, fmt.Sprintf(`{
-		"channel_uuid": "74729f45-7f29-4868-9dc4-90e491e3c7d8",
-		"contact": {"id": 10000, "uuid": "a393abc0-283d-4c9b-a1b3-641a035c34bf", "last_seen_on": "2023-04-20T10:15:00Z", "other_urns": ["whatsapp:16055741111"]},
-		"created_on": %s,
-		"flow": {"uuid": "9de3663f-c5c5-4c92-9f45-ecbc09abcc85", "name": "Favorites"},
-		"high_priority": true,
-		"optin": {
-			"id": %d,
-			"name": "Joke Of The Day"
-		},
-		"org_id": 1,
-		"origin": "flow",
-		"response_to_external_id": "EX123",
-		"session": {
-			"uuid": "%s",
-			"status": "W",
-			"sprint_uuid": "%s"
-        },
-		"text": "",
-		"tps_cost": 1,
-		"urn": "tel:+16055741111",
-		"uuid": "%s"
-	}`, string(jsonx.MustMarshal(optInEvent.CreatedOn().In(time.UTC))), optIn.ID(), session.UUID(), sprint.UUID(), msg4.UUID()))
 
 	// make msg1 look like it errored and fetch it for retrying
 	rt.DB.MustExec(`UPDATE msgs_msg SET status = 'E', error_count = 1, next_attempt = $2 WHERE id = $1`, msg1.ID(), time.Now())
@@ -271,8 +234,6 @@ func TestQueueCourierMessages(t *testing.T) {
 	vc := rt.VK.Get()
 	defer vc.Close()
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
-
 	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshOrg|models.RefreshChannels)
 	require.NoError(t, err)
 
@@ -314,8 +275,6 @@ func TestClearChannelCourierQueue(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 	vc := rt.VK.Get()
 	defer vc.Close()
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
 
 	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshOrg|models.RefreshChannels)
 	require.NoError(t, err)
@@ -375,8 +334,6 @@ func TestPushCourierBatch(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 	vc := rt.VK.Get()
 	defer vc.Close()
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
 
 	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshChannels)
 	require.NoError(t, err)

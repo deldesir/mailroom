@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -20,6 +21,8 @@ func init() {
 
 // ImportContactBatch is our task to import a batch of contacts
 type ImportContactBatch struct {
+	BatchTask
+
 	ContactImportBatchID models.ContactImportBatchID `json:"contact_import_batch_id"`
 }
 
@@ -37,7 +40,7 @@ func (t *ImportContactBatch) WithAssets() models.Refresh {
 }
 
 // Perform figures out the membership for a query based group then repopulates it
-func (t *ImportContactBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
+func (t *ImportContactBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, taskID TaskID) error {
 	batch, err := models.LoadContactImportBatch(ctx, rt.DB, t.ContactImportBatchID)
 	if err != nil {
 		return fmt.Errorf("error loading contact import batch: %w", err)
@@ -52,16 +55,20 @@ func (t *ImportContactBatch) Perform(ctx context.Context, rt *runtime.Runtime, o
 
 	// if any error occurs this batch should be marked as failed
 	if batchErr != nil {
-		batch.SetFailed(ctx, rt.DB)
+		if err := batch.SetFailed(ctx, rt.DB); err != nil {
+			slog.Error("error marking import batch as failed", "error", err, "import_id", batch.ImportID, "batch_id", batch.ID)
+		}
 	}
 
-	// decrement the counter to see if the overall import is now finished
-	counter := NewCounter(fmt.Sprintf("contact_import_batches_remaining:%d", batch.ImportID), 24*time.Hour)
-	done, err := counter.Done(ctx, rt.VK)
-	if err != nil {
-		return fmt.Errorf("error decrementing import batch counter: %w", err)
-	}
-	if done {
+	// mark this batch as complete and check if the overall import is now finished
+	if t.RecordComplete(ctx, rt, taskID) {
+		// reload the import to get the final statuses of all batches - the statuses loaded before this batch was
+		// processed are stale by now
+		imp, err = models.LoadContactImport(ctx, rt.DB, batch.ImportID)
+		if err != nil {
+			return fmt.Errorf("error reloading contact import: %w", err)
+		}
+
 		// if any batch failed, then import is considered failed
 		success := !slices.Contains(imp.BatchStatuses, models.ImportStatusFailed)
 

@@ -1,7 +1,6 @@
 package hooks_test
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
@@ -24,8 +23,6 @@ import (
 func TestConfirmAirtimeTransfers(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 	rt.Config.Domain = "mailroom.example.com"
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	rt.DB.MustExec(`UPDATE orgs_org SET config = '{"dtone_key": "key123", "dtone_secret": "sesame"}'::jsonb WHERE id = $1`, testdb.Org1.ID)
 
@@ -94,7 +91,7 @@ func TestConfirmAirtimeTransfers(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rt.HTTP.Services.Transport = httpx.WithMocks(http.DefaultTransport, map[string][]*httpx.MockResponse{
+			rt.HTTP.Services.Transport, _ = testsuite.MockTransport(map[string][]*httpx.MockResponse{
 				"https://dvs-api.dtone.com/v1/async/transactions/2237512891/confirm": tc.mocks,
 			})
 			tr := seed()

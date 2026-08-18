@@ -2,9 +2,11 @@ package ctasks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/nyaruka/gocommon/dates"
+	"github.com/nyaruka/gocommon/svclogs"
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/goflow/core/events"
@@ -18,7 +20,6 @@ import (
 	"github.com/nyaruka/mailroom/v26/core/msgio"
 	"github.com/nyaruka/mailroom/v26/core/runner"
 	"github.com/nyaruka/mailroom/v26/runtime"
-	"github.com/nyaruka/mailroom/v26/utils/svclogs"
 )
 
 const TypeMsgReceived = "msg_received"
@@ -35,6 +36,7 @@ type MsgReceived struct {
 	URNID         models.URNID     `json:"urn_id"`
 	Text          string           `json:"text"`
 	Attachments   []string         `json:"attachments,omitempty"`
+	Payload       json.RawMessage  `json:"payload,omitempty"`
 	NewContact    bool             `json:"new_contact"`
 	NewURN        *NewURNSpec      `json:"new_urn,omitempty"`
 }
@@ -86,14 +88,14 @@ func (t *MsgReceived) perform(ctx context.Context, rt *runtime.Runtime, oa *mode
 		ticketUUID = tks[len(tks)-1].UUID
 	}
 
-	msgIn := core.NewMsgIn(t.URN, channel.Reference(), t.Text, availableAttachments, string(t.MsgExternalID))
+	msgIn := core.NewMsgIn(t.URN, channel.Reference(), t.Text, availableAttachments, string(t.MsgExternalID), t.Payload)
 	msgEvent := events.NewMsgReceived(msgIn, ticketUUID)
 	msgEvent.UUID_ = t.MsgUUID
 
-	// build our flow contact
+	// build our engine contact
 	contact, err := mc.EngineContact(oa)
 	if err != nil {
-		return fmt.Errorf("error creating flow contact: %w", err)
+		return fmt.Errorf("error creating engine contact: %w", err)
 	}
 
 	scene := runner.NewScene(mc, contact)

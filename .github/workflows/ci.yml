@@ -1,5 +1,12 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+    tags: ["**"]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
   test:
     name: Test
@@ -10,10 +17,13 @@ jobs:
     services:
       valkey:
         image: valkey/valkey:8.1-alpine
+        env:
+          # tests claim their own databases from 16-31 so need more than the default 16
+          VALKEY_EXTRA_FLAGS: --databases 32
         ports:
           - 6379:6379
       postgres:
-        image: postgres:15-alpine
+        image: pgvector/pgvector:0.8.3-pg15
         env:
           POSTGRES_PASSWORD: temba
         ports:
@@ -26,26 +36,65 @@ jobs:
         env:
           discovery.type: single-node
           xpack.security.enabled: false
+          # test indexes are created as the tests run and hold almost no data, but by then the runner's
+          # disk is past the default 90% high watermark, which leaves their primaries permanently
+          # unassigned and every search against them failing with a 503. Watermarks as free space rather
+          # than percentages keep allocation working on an otherwise full disk. (disk.threshold_enabled
+          # would be more direct but is only honoured via the cluster settings API, not from config.)
+          cluster.routing.allocation.disk.watermark.low: 1gb
+          cluster.routing.allocation.disk.watermark.high: 1gb
+          cluster.routing.allocation.disk.watermark.flood_stage: 1gb
         options: --health-cmd "curl http://localhost:9200/_cluster/health" --health-interval 10s --health-timeout 5s --health-retries 5
       localstack:
         image: localstack/localstack:4.14
         env:
-          SERVICES: s3,dynamodb,cloudwatch
+          SERVICES: s3
         ports:
           - 4566:4566
+      dynamodb:
+        image: amazon/dynamodb-local:3.3.1
+        ports:
+          - 8000:8000
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Install Postgres Client
+      - name: Get Go cache paths
+        id: go-cache-paths
         run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> $GITHUB_OUTPUT
+          echo "gocache=$(go env GOCACHE)" >> $GITHUB_OUTPUT
+          echo "goversion=$(go env GOVERSION)" >> $GITHUB_OUTPUT
+
+      - name: Install Postgres client and zstd
+        # zstd must be installed before the cache step so actions/cache uses fast multithreaded
+        # zstd compression instead of falling back to single-threaded gzip
+        run: |
+          . /etc/os-release
+          echo "deb http://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+          wget --quiet -O /etc/apt/trusted.gpg.d/postgresql.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
           apt-get update
-          apt-get install -y wget gnupg2 lsb-release
-          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | tee /etc/apt/trusted.gpg.d/postgresql.asc > /dev/null
-          apt-get update
-          apt-get install -y --no-install-recommends postgresql-client-15
+          apt-get install -y --no-install-recommends postgresql-client-15 zstd
+
+      - name: Cache Go modules
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.go-cache-paths.outputs.gomodcache }}
+          key: gomod-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            gomod-
+
+      - name: Cache Go build cache
+        # unlike the module cache, never restored across toolchain versions: a build cache from
+        # another compiler version is unusable dead weight, and restoring it alongside the full
+        # rebuild it forces can fill the runner disk
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.go-cache-paths.outputs.gocache }}
+          key: gobuild-${{ steps.go-cache-paths.outputs.goversion }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            gobuild-${{ steps.go-cache-paths.outputs.goversion }}-
 
       - name: Initialize database
         # we create our test database with a different user so that we can drop everything owned by this user between tests
@@ -57,7 +106,7 @@ jobs:
 
       - name: Run tests
         run: |
-          go test -p=1 -coverprofile=coverage.text -covermode=atomic ./...
+          go test -cover ./...
 
   release:
     name: Release

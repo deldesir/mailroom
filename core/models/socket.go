@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -28,6 +29,33 @@ func HistorySocket(contactUUID core.ContactUUID, ticketUUID ...core.TicketUUID) 
 		return fmt.Sprintf("%s:%s:%s", SocketHistoryNamespace, contactUUID, ticketUUID[0])
 	}
 	return fmt.Sprintf("%s:%s", SocketHistoryNamespace, contactUUID)
+}
+
+// SocketFlowNamespace is the realtime pub/sub namespace for things happening to a specific flow that its editors care
+// about. A flow socket is addressed as "flow:<flow-uuid>" and carries typed payloads - currently just activity change
+// notifications, but it's deliberately per-flow rather than per-feature so that other flow level updates (e.g.
+// revisions, issues) can be published to the same socket later. Like the other namespaces it's a client subscription,
+// authorized per-session by the subscribe proxy, which records the same "socket-subs:" presence key - so mailroom
+// only publishes to it when someone actually has the flow open.
+const SocketFlowNamespace = "flow"
+
+// FlowSocket returns the realtime pub/sub socket for the given flow, addressed as "flow:<flow-uuid>".
+func FlowSocket(flowUUID assets.FlowUUID) string {
+	return fmt.Sprintf("%s:%s", SocketFlowNamespace, flowUUID)
+}
+
+// SocketOrgNamespace is the realtime pub/sub namespace for workspace-wide state changes shared by every open page. A
+// workspace socket is addressed as "org:<org-uuid>" and currently carries "asset_changed" payloads - an asset's
+// canonical name has changed, so any page caching that name should update it. These are produced on the platform's
+// Django side and published through the org publish endpoint. Like the other namespaces it's a client subscription,
+// authorized per-session by the subscribe proxy, which records the same "socket-subs:" presence key. Note this is the
+// one namespace any member of the workspace may subscribe to with no further permission check (unlike e.g. "flow:",
+// which requires flows.flow_editor), so anything published here is visible to every user in the workspace.
+const SocketOrgNamespace = "org"
+
+// OrgSocket returns the realtime pub/sub socket for the given workspace, addressed as "org:<org-uuid>".
+func OrgSocket(orgUUID OrgUUID) string {
+	return fmt.Sprintf("%s:%s", SocketOrgNamespace, orgUUID)
 }
 
 // SocketNotificationsNamespace is the realtime pub/sub namespace for a user's notifications within a workspace. A
@@ -103,6 +131,22 @@ func PublishNotificationData(ctx context.Context, rt *runtime.Runtime, oa *OrgAs
 	return nil
 }
 
+// PublishOrgEvent publishes an already-rendered workspace event verbatim to the workspace's socket. The event is
+// published as given - the rendering is the caller's, so mailroom needs no knowledge of the event types - but must be
+// a JSON object, since the realtime protocol assumes one and clients dispatch on its type. As with the other sockets
+// this is best-effort and a no-op when the workspace currently has no subscribers.
+func PublishOrgEvent(ctx context.Context, rt *runtime.Runtime, oa *OrgAssets, event json.RawMessage) error {
+	if len(event) == 0 || event[0] != '{' {
+		return errors.New("org event must be a JSON object")
+	}
+
+	pub := &centrifugo.Publication{Channel: OrgSocket(oa.Org().UUID()), Data: event}
+	if err := rt.Centrifugo.Publish(ctx, pub); err != nil {
+		return fmt.Errorf("error publishing org event: %w", err)
+	}
+	return nil
+}
+
 // PublishToHistory publishes engine events to a contact's history sockets for any live subscribers. Each event is
 // sent as its full JSON, including its uuid - matching the shape clients fetch from the history table, save for the
 // hydration the fetch layer adds on read (e.g. resolving user avatars).
@@ -130,6 +174,30 @@ func PublishToHistory(ctx context.Context, rt *runtime.Runtime, contactUUID core
 
 	if err := rt.Centrifugo.Publish(ctx, pubs...); err != nil {
 		return fmt.Errorf("error publishing history events: %w", err)
+	}
+
+	return nil
+}
+
+// PublishFlowActivity publishes an activity change notification to each given flow's socket, telling any live
+// watchers (i.e. open editors) that the flow's activity counts have changed and are worth re-fetching. The payload is
+// deliberately just a typed ping rather than the counts themselves - the activity read endpoint stays the single
+// source of truth (it also includes state this code never sees, like node active counts), and watchers re-fetch from
+// it on their own debounced schedule. As with the other socket publishes it's best-effort and a no-op for any flow
+// that currently has no watchers - the centrifugo service resolves subscriber presence for the whole batch in a
+// single lookup, so in the overwhelmingly common case of nobody watching this costs one valkey round-trip.
+func PublishFlowActivity(ctx context.Context, rt *runtime.Runtime, flowUUIDs []assets.FlowUUID) error {
+	if len(flowUUIDs) == 0 {
+		return nil
+	}
+
+	pubs := make([]*centrifugo.Publication, len(flowUUIDs))
+	for i, flowUUID := range flowUUIDs {
+		pubs[i] = &centrifugo.Publication{Channel: FlowSocket(flowUUID), Data: json.RawMessage(`{"type":"activity"}`)}
+	}
+
+	if err := rt.Centrifugo.Publish(ctx, pubs...); err != nil {
+		return fmt.Errorf("error publishing flow activity: %w", err)
 	}
 
 	return nil

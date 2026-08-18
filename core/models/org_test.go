@@ -2,13 +2,17 @@ package models_test
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/goflow/envs"
+	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/goflow/utils"
+	"github.com/nyaruka/mailroom/v26/core/goflow"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/testsuite"
 	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
@@ -20,8 +24,6 @@ import (
 func TestLoadOrg(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	tz, _ := time.LoadLocation("America/Los_Angeles")
 
 	rt.DB.MustExec("UPDATE channels_channel SET country = 'FR' WHERE id = $1;", testdb.FacebookChannel.ID)
@@ -29,6 +31,7 @@ func TestLoadOrg(t *testing.T) {
 
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_languages = '{"fra", "eng"}' WHERE id = $1`, testdb.Org1.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_smtp = 'smtp://foo:bar' WHERE id = $1`, testdb.Org1.ID)
+	rt.DB.MustExec(`UPDATE orgs_org SET features = '{"unrestricted_webhooks"}' WHERE id = $1`, testdb.Org1.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET is_suspended = TRUE, suspended_on = NOW() WHERE id = $1`, testdb.Org2.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_languages = '{}' WHERE id = $1`, testdb.Org2.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET date_format = 'M' WHERE id = $1`, testdb.Org2.ID)
@@ -38,6 +41,8 @@ func TestLoadOrg(t *testing.T) {
 
 	assert.Equal(t, models.OrgID(1), org.ID())
 	assert.False(t, org.Suspended())
+	assert.True(t, org.HasFeature(models.FeatureUnrestrictedWebhooks))
+	assert.False(t, org.HasFeature("teams"))
 	assert.Equal(t, "smtp://foo:bar", org.FlowSMTP())
 	assert.Equal(t, envs.DateFormatDayMonthYear, org.Environment().DateFormat())
 	assert.Equal(t, envs.TimeFormatHourMinute, org.Environment().TimeFormat())
@@ -52,6 +57,7 @@ func TestLoadOrg(t *testing.T) {
 	org, err = models.LoadOrg(ctx, rt.Config, rt.DB.DB, testdb.Org2.ID)
 	assert.NoError(t, err)
 	assert.True(t, org.Suspended())
+	assert.False(t, org.HasFeature(models.FeatureUnrestrictedWebhooks))
 	assert.Equal(t, "", org.FlowSMTP())
 	assert.Equal(t, envs.DateFormatMonthDayYear, org.Environment().DateFormat())
 	assert.Equal(t, []i18n.Language{}, org.Environment().AllowedLanguages())
@@ -65,8 +71,6 @@ func TestLoadOrg(t *testing.T) {
 
 func TestGetOrgIDFromUUID(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	// mark org 2 deleted
 	rt.DB.MustExec(`UPDATE orgs_org SET is_active = FALSE WHERE id = $1`, testdb.Org2.ID)
@@ -83,8 +87,6 @@ func TestGetOrgIDFromUUID(t *testing.T) {
 
 func TestEmailService(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	// make org 2 a child of org 1
 	rt.DB.MustExec(`UPDATE orgs_org SET parent_id = $2 WHERE id = $1`, testdb.Org2.ID, testdb.Org1.ID)
@@ -123,10 +125,51 @@ func TestEmailService(t *testing.T) {
 	assert.NotNil(t, svc)
 }
 
-func TestStoreAttachment(t *testing.T) {
+func TestWebhookServiceFactory(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetStorage)
+	rt.Config.WebhooksBlockedDomains = []string{"blocked.com"}
+
+	blocked, _ := url.Parse("https://blocked.com/foo")
+	blockedSub, _ := url.Parse("https://api.blocked.com/foo")
+	allowed, _ := url.Parse("https://example.com/foo")
+
+	webhookService := func(oa *models.OrgAssets) flows.WebhookService {
+		svc, err := goflow.Engine(rt).Services().Webhook(oa.SessionAssets())
+		require.NoError(t, err)
+		return svc
+	}
+
+	// by default an org can't call the blocked domains
+	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+	require.NoError(t, err)
+
+	svc := webhookService(oa)
+	assert.True(t, svc.IsBlocked(blocked))
+	assert.True(t, svc.IsBlocked(blockedSub))
+	assert.False(t, svc.IsBlocked(allowed))
+
+	// but an org with the feature can
+	rt.DB.MustExec(`UPDATE orgs_org SET features = '{"unrestricted_webhooks"}' WHERE id = $1`, testdb.Org1.ID)
+	models.FlushCache()
+
+	oa, err = models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+	require.NoError(t, err)
+
+	svc = webhookService(oa)
+	assert.False(t, svc.IsBlocked(blocked))
+	assert.False(t, svc.IsBlocked(blockedSub))
+	assert.False(t, svc.IsBlocked(allowed))
+
+	// which doesn't affect other orgs
+	oa, err = models.GetOrgAssets(ctx, rt, testdb.Org2.ID)
+	require.NoError(t, err)
+
+	assert.True(t, webhookService(oa).IsBlocked(blocked))
+}
+
+func TestStoreAttachment(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
 
 	image, err := os.Open("testdata/test.jpg")
 	require.NoError(t, err)
@@ -137,7 +180,8 @@ func TestStoreAttachment(t *testing.T) {
 	attachment, err := org.StoreAttachment(context.Background(), rt, "668383ba-387c-49bc-b164-1213ac0ea7aa.jpg", "image/jpeg", image)
 	require.NoError(t, err)
 
-	assert.Equal(t, utils.Attachment("image/jpeg:http://localstack:4566/test-attachments/attachments/1/6683/83ba/668383ba-387c-49bc-b164-1213ac0ea7aa.jpg"), attachment)
+	expectedURL := fmt.Sprintf("http://localstack:4566/%s/attachments/1/6683/83ba/668383ba-387c-49bc-b164-1213ac0ea7aa.jpg", rt.Config.S3AttachmentsBucket)
+	assert.Equal(t, utils.Attachment("image/jpeg:"+expectedURL), attachment)
 
 	// err trying to read from same reader again
 	_, err = org.StoreAttachment(context.Background(), rt, "668383ba-387c-49bc-b164-1213ac0ea7aa.jpg", "image/jpeg", image)
@@ -146,8 +190,6 @@ func TestStoreAttachment(t *testing.T) {
 
 func TestGetOutboxCounts(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	rt.DB.MustExec(`INSERT INTO orgs_itemcount(org_id, scope, count, is_squashed) VALUES ($1, 'msgs:folder:O', -1, FALSE)`, testdb.Org1.ID)
 	rt.DB.MustExec(`INSERT INTO orgs_itemcount(org_id, scope, count, is_squashed) VALUES ($1, 'msgs:folder:O', 2, FALSE)`, testdb.Org1.ID)

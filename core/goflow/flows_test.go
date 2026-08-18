@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/assets"
@@ -16,7 +16,7 @@ import (
 )
 
 func TestSpecVersion(t *testing.T) {
-	assert.Equal(t, semver.MustParse("14.4.1"), goflow.SpecVersion())
+	assert.Equal(t, semver.MustParse("14.4.2"), goflow.SpecVersion())
 }
 
 func TestReadFlow(t *testing.T) {
@@ -49,7 +49,7 @@ func TestCloneDefinition(t *testing.T) {
 
 	cloned, err := goflow.CloneDefinition([]byte(`{"uuid": "502c3ee4-3249-4dee-8e71-c62070667d52", "name": "New", "spec_version": "13.0.0", "type": "messaging", "language": "eng", "nodes": []}`), nil)
 	assert.NoError(t, err)
-	test.AssertEqualJSON(t, []byte(`{"uuid": "1ae96956-4b34-433e-8d1a-f05fe6923d6d", "name": "New", "spec_version": "13.0.0", "type": "messaging", "language": "eng", "nodes": []}`), cloned)
+	test.AssertEqualJSON(t, []byte(`{"uuid": "72b553cc-c00b-44e6-bb48-4710e784acb8", "name": "New", "spec_version": "13.0.0", "type": "messaging", "language": "eng", "nodes": []}`), cloned)
 }
 
 func TestMigrateDefinition(t *testing.T) {
@@ -58,7 +58,7 @@ func TestMigrateDefinition(t *testing.T) {
 	uuids.SetGenerator(uuids.NewSeededGenerator(12345, time.Now))
 	defer uuids.SetGenerator(uuids.DefaultGenerator)
 
-	versions := []string{"13.0.0", "13.1.0", "13.2.0", "13.3.0", "13.4.0", "13.5.0", "13.6.0", "13.6.1", "14.0.0", "14.1.0", "14.2.0", "14.3.0", "14.3.1", "14.4.1"}
+	versions := []string{"13.0.0", "13.1.0", "13.2.0", "13.3.0", "13.4.0", "13.5.0", "13.6.0", "13.6.1", "14.0.0", "14.1.0", "14.2.0", "14.3.0", "14.3.1", "14.4.2"}
 	flowDefs := make(map[string][]byte, len(versions))
 	for _, version := range versions {
 		flowDefs[version] = testsuite.ReadFile(t, "testdata/migrate/"+version+".json")

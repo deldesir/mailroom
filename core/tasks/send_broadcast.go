@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/search"
@@ -43,7 +44,7 @@ func (t *SendBroadcast) WithAssets() models.Refresh {
 }
 
 // Perform handles sending the broadcast by creating batches of broadcast sends for all the unique contacts
-func (t *SendBroadcast) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
+func (t *SendBroadcast) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, taskID TaskID) error {
 	if err := createBroadcastBatches(ctx, rt, oa, t.Broadcast); err != nil {
 		t.Broadcast.SetFailed(ctx, rt.DB)
 
@@ -107,11 +108,12 @@ func createBroadcastBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 	// create tasks for batches of contacts
 	idBatches := slices.Collect(slices.Chunk(contactIDs, broadcastBatchSize))
 	for i, idBatch := range idBatches {
-		isFirst := (i == 0)
-		isLast := (i == len(idBatches)-1)
-
-		batch := bcast.CreateBatch(idBatch, isFirst, isLast)
-		err = Queue(ctx, rt, q, bcast.OrgID, &SendBroadcastBatch{BroadcastBatch: batch}, false)
+		batch := bcast.CreateBatch(idBatch)
+		batchTask := &SendBroadcastBatch{
+			BatchTask:      BatchTask{BatchOwnerUUID: uuids.UUID(bcast.UUID), TotalBatches: len(idBatches)},
+			BroadcastBatch: batch,
+		}
+		err = Queue(ctx, rt, q, bcast.OrgID, batchTask, false)
 		if err != nil {
 			if i == 0 {
 				return fmt.Errorf("error queuing broadcast batch: %w", err)

@@ -13,6 +13,7 @@ import (
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
 	"github.com/nyaruka/gocommon/httpx"
 	"github.com/nyaruka/gocommon/jsonx"
+	"github.com/nyaruka/gocommon/svclogs"
 	"github.com/nyaruka/goflow/test"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	_ "github.com/nyaruka/mailroom/v26/core/runner/handlers"
@@ -22,7 +23,6 @@ import (
 	"github.com/nyaruka/mailroom/v26/services/ivr/vonage"
 	"github.com/nyaruka/mailroom/v26/testsuite"
 	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
-	"github.com/nyaruka/mailroom/v26/utils/svclogs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,8 +54,6 @@ func mockTwilioHandler(w http.ResponseWriter, r *http.Request) {
 
 func TestTwilioIVR(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	// start mocked API server
 	mockTwilio := test.NewHTTPServer(50001, http.HandlerFunc(mockTwilioHandler))
@@ -105,9 +103,9 @@ func TestTwilioIVR(t *testing.T) {
 		testdb.Cat.ID, models.CallStatusWired, "Call3").Returns(1)
 
 	// give calls known UUIDs
-	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-190b-76f8-92a3-d648ab64bccb' WHERE external_id = 'Call1'`)
-	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-2c93-76f8-8f41-6b2d9f33d623' WHERE external_id = 'Call2'`)
-	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-401b-76f8-ba00-bd7f0d08e671' WHERE external_id = 'Call3'`)
+	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-190b-76f8-92ed-42cbd11a03fd' WHERE external_id = 'Call1'`)
+	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-2c93-76f8-b774-0a98171a0712' WHERE external_id = 'Call2'`)
+	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-401b-76f8-aac5-d9d0ae409dbe' WHERE external_id = 'Call3'`)
 
 	testsuite.RunWebTests(t, rt, "./testdata/ivr_twilio.json")
 
@@ -168,8 +166,6 @@ func TestVonageIVR(t *testing.T) {
 	vc := rt.VK.Get()
 	defer vc.Close()
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	// deactivate our twilio channel
 	rt.DB.MustExec(`UPDATE channels_channel SET is_active = FALSE WHERE id = $1`, testdb.TwilioChannel.ID)
 
@@ -206,8 +202,8 @@ func TestVonageIVR(t *testing.T) {
 		testdb.Cat.ID, models.CallStatusWired, "Call2").Returns(1)
 
 	// give calls known UUIDs
-	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-190b-76f8-92a3-d648ab64bccb' WHERE external_id = 'Call1'`)
-	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-2c93-76f8-8f41-6b2d9f33d623' WHERE external_id = 'Call2'`)
+	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-190b-76f8-92ed-42cbd11a03fd' WHERE external_id = 'Call1'`)
+	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-2c93-76f8-b774-0a98171a0712' WHERE external_id = 'Call2'`)
 
 	testsuite.RunWebTests(t, rt, "./testdata/ivr_vonage.json")
 
@@ -247,7 +243,7 @@ func getCallLogs(t *testing.T, rt *runtime.Runtime, ch *testdb.Channel) []*httpx
 
 	for _, logUUID := range logUUIDs {
 		key := dynamo.Key{PK: fmt.Sprintf("cha#%s#%s", ch.UUID, logUUID[35:36]), SK: fmt.Sprintf("log#%s", logUUID)}
-		item, err := dynamo.GetItem(t.Context(), rt.Dynamo.Main.Client(), "TestMain", key)
+		item, err := dynamo.GetItem(t.Context(), rt.Dynamo.Main.Client(), rt.Dynamo.Main.Table(), key)
 		require.NoError(t, err)
 		require.NotNil(t, item, "log item not found for key %s", key)
 

@@ -12,20 +12,17 @@ import (
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/core"
-	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/excellent/types"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/testsuite"
 	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
 	"github.com/nyaruka/mailroom/v26/utils/test"
-	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestContacts(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	// for now it's still possible to have more than one open ticket in the database
 	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-717a-a39e-e8ca91fb7262", testdb.Org1, testdb.Ann, testdb.SupportTopic, time.Now(), testdb.Agent)
@@ -48,8 +45,8 @@ func TestContacts(t *testing.T) {
 	// LoadContacts doesn't guarantee returned order of contacts
 	sort.Slice(mcs, func(i, j int) bool { return mcs[i].ID() < mcs[j].ID() })
 
-	// convert to goflow contacts
-	contacts := make([]*flows.Contact, len(mcs))
+	// convert to engine contacts
+	contacts := make([]*core.Contact, len(mcs))
 	for i := range mcs {
 		contacts[i], err = mcs[i].EngineContact(org)
 		assert.NoError(t, err)
@@ -70,7 +67,7 @@ func TestContacts(t *testing.T) {
 	assert.Equal(t, "Yobe", ann.Fields()["state"].QueryValue())
 	assert.Equal(t, "Dokshi", ann.Fields()["ward"].QueryValue())
 	assert.Equal(t, "F", ann.Fields()["gender"].QueryValue())
-	assert.Equal(t, (*flows.FieldValue)(nil), ann.Fields()["age"])
+	assert.Equal(t, (*core.FieldValue)(nil), ann.Fields()["age"])
 
 	assert.Equal(t, "Bob", bob.Name())
 	assert.NotNil(t, bob.Fields()["joined"].QueryValue())
@@ -81,7 +78,7 @@ func TestContacts(t *testing.T) {
 	assert.NotNil(t, bob.Tickets().LastOpen())
 
 	assert.Equal(t, "Cat", cat.Name())
-	assert.Equal(t, decimal.RequireFromString("30"), cat.Fields()["age"].QueryValue())
+	assert.Equal(t, types.NewXNumberFromInt(30), cat.Fields()["age"].QueryValue())
 	assert.Equal(t, 0, len(cat.URNs()))
 	assert.Equal(t, 0, cat.Groups().Count())
 	assert.Nil(t, cat.Tickets().LastOpen())
@@ -89,8 +86,6 @@ func TestContacts(t *testing.T) {
 
 func TestCreateContact(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	testdb.InsertContactGroup(t, rt, testdb.Org1, "d636c966-79c1-4417-9f1c-82ad629773a2", "Kinyarwanda", "language = kin")
 
@@ -100,22 +95,22 @@ func TestCreateContact(t *testing.T) {
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	require.NoError(t, err)
 
-	contact, flowContact, err := models.CreateContact(ctx, rt.DB, oa, models.UserID(1), "Rich", `kin`, models.ContactStatusActive, []urns.URN{urns.URN("telegram:200001"), urns.URN("telegram:200002")})
+	mc, contact, err := models.CreateContact(ctx, rt.DB, oa, models.UserID(1), "Rich", `kin`, models.ContactStatusActive, []urns.URN{urns.URN("telegram:200001"), urns.URN("telegram:200002")})
 	assert.NoError(t, err)
+
+	assert.Equal(t, "Rich", mc.Name())
+	assert.Equal(t, i18n.Language(`kin`), mc.Language())
+	assert.Equal(t, models.ContactStatusActive, mc.Status())
+	assert.Len(t, mc.URNs(), 2)
+	assert.Equal(t, urns.URN("telegram:200001"), mc.URNs()[0].Identity)
+	assert.Equal(t, urns.URN("telegram:200002"), mc.URNs()[1].Identity)
 
 	assert.Equal(t, "Rich", contact.Name())
 	assert.Equal(t, i18n.Language(`kin`), contact.Language())
-	assert.Equal(t, models.ContactStatusActive, contact.Status())
-	assert.Len(t, contact.URNs(), 2)
-	assert.Equal(t, urns.URN("telegram:200001"), contact.URNs()[0].Identity)
-	assert.Equal(t, urns.URN("telegram:200002"), contact.URNs()[1].Identity)
-
-	assert.Equal(t, "Rich", flowContact.Name())
-	assert.Equal(t, i18n.Language(`kin`), flowContact.Language())
-	assert.Equal(t, core.ContactStatusActive, flowContact.Status())
-	assert.Equal(t, []urns.URN{"telegram:200001", "telegram:200002"}, flowContact.URNs().Encode())
-	assert.Len(t, flowContact.Groups().All(), 1)
-	assert.Equal(t, assets.GroupUUID("d636c966-79c1-4417-9f1c-82ad629773a2"), flowContact.Groups().All()[0].UUID())
+	assert.Equal(t, core.ContactStatusActive, contact.Status())
+	assert.Equal(t, []urns.URN{"telegram:200001", "telegram:200002"}, contact.URNs().Encode())
+	assert.Len(t, contact.Groups().All(), 1)
+	assert.Equal(t, assets.GroupUUID("d636c966-79c1-4417-9f1c-82ad629773a2"), contact.Groups().All()[0].UUID())
 
 	_, _, err = models.CreateContact(ctx, rt.DB, oa, models.UserID(1), "Rich", `kin`, models.ContactStatusActive, []urns.URN{urns.URN("telegram:200001")})
 	assert.EqualError(t, err, "URN 0 in use by other contacts")
@@ -127,17 +122,15 @@ func TestCreateContact(t *testing.T) {
 	}
 
 	// new blocked contact won't be added to smart groups
-	contact, flowContact, err = models.CreateContact(ctx, rt.DB, oa, models.UserID(1), "Bob", `kin`, models.ContactStatusBlocked, []urns.URN{urns.URN("telegram:200003")})
+	mc, contact, err = models.CreateContact(ctx, rt.DB, oa, models.UserID(1), "Bob", `kin`, models.ContactStatusBlocked, []urns.URN{urns.URN("telegram:200003")})
 	assert.NoError(t, err)
-	assert.Equal(t, models.ContactStatusBlocked, contact.Status())
-	assert.Equal(t, core.ContactStatusBlocked, flowContact.Status())
-	assert.Len(t, flowContact.Groups().All(), 0)
+	assert.Equal(t, models.ContactStatusBlocked, mc.Status())
+	assert.Equal(t, core.ContactStatusBlocked, contact.Status())
+	assert.Len(t, contact.Groups().All(), 0)
 }
 
 func TestCreateContactRace(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	assert.NoError(t, err)
@@ -165,8 +158,6 @@ func TestCreateContactRace(t *testing.T) {
 
 func TestGetOrCreateContact(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	testdb.InsertContactGroup(t, rt, testdb.Org1, "dcc16d85-8274-4d19-a3c2-152d4ee99380", "Telegrammer", `telegram = 100001`)
 
@@ -274,15 +265,15 @@ func TestGetOrCreateContact(t *testing.T) {
 	}
 
 	for i, tc := range tcs {
-		contact, flowContact, created, err := models.GetOrCreateContact(ctx, rt.DB, oa, testdb.Admin.ID, tc.URNs, tc.ChannelID)
+		mc, contact, created, err := models.GetOrCreateContact(ctx, rt.DB, oa, testdb.Admin.ID, tc.URNs, tc.ChannelID)
 		assert.NoError(t, err, "%d: error creating contact", i)
 
-		assert.Equal(t, tc.ContactID, contact.ID(), "%d: contact id mismatch", i)
-		assert.Equal(t, tc.ContactURNs, flowContact.URNs().Encode(), "%d: URNs mismatch", i)
+		assert.Equal(t, tc.ContactID, mc.ID(), "%d: contact id mismatch", i)
+		assert.Equal(t, tc.ContactURNs, contact.URNs().Encode(), "%d: URNs mismatch", i)
 		assert.Equal(t, tc.Created, created, "%d: created flag mismatch", i)
 
-		groupUUIDs := make([]assets.GroupUUID, len(flowContact.Groups().All()))
-		for i, g := range flowContact.Groups().All() {
+		groupUUIDs := make([]assets.GroupUUID, len(contact.Groups().All()))
+		for i, g := range contact.Groups().All() {
 			groupUUIDs[i] = g.UUID()
 		}
 
@@ -292,8 +283,6 @@ func TestGetOrCreateContact(t *testing.T) {
 
 func TestGetOrCreateContactRace(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	assert.NoError(t, err)
@@ -321,8 +310,6 @@ func TestGetOrCreateContactRace(t *testing.T) {
 
 func TestGetOrCreateContactIDsFromURNs(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	assert.NoError(t, err)
@@ -380,8 +367,6 @@ func TestGetOrCreateContactIDsFromURNs(t *testing.T) {
 
 func TestGetOrCreateContactsFromURNsRace(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	assert.NoError(t, err)
@@ -470,8 +455,6 @@ func TestGetContactIDsPage(t *testing.T) {
 func TestUpdateContactLastSeenAndModifiedOn(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	require.NoError(t, err)
 
@@ -504,8 +487,6 @@ func TestUpdateContactLastSeenAndModifiedOn(t *testing.T) {
 func TestUpdateContactStatus(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	err := models.UpdateContactStatus(ctx, rt.DB, []*models.ContactStatusChange{})
 	assert.NoError(t, err)
 
@@ -535,8 +516,6 @@ func TestUpdateContactStatus(t *testing.T) {
 func TestUpdateContactURNs(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	assert.NoError(t, err)
 
@@ -557,12 +536,12 @@ func TestUpdateContactURNs(t *testing.T) {
 	updateURNs := func(us map[*testdb.Contact][]urns.URN) {
 		changes := make([]*models.ContactURNsChanged, 0, 4)
 		for c, urnz := range us {
-			mc, fc, _ := c.Load(t, rt, oa)
+			mc, contact, _ := c.Load(t, rt, oa)
 
 			for _, u := range urnz {
 				// simulate how the engine would claim new URNs
-				if !fc.HasURN(u) {
-					claimed, err := models.ContactClaimURN(ctx, rt, oa.Org(), fc, u)
+				if !contact.HasURN(u) {
+					claimed, err := models.ContactClaimURN(ctx, rt, oa.Org(), contact, u)
 					assert.NoError(t, err)
 					assert.True(t, claimed)
 				}
@@ -631,6 +610,58 @@ func TestUpdateContactURNs(t *testing.T) {
 	assertURNs(testdb.Dan, []string{"tel:+16055742222"})
 
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM contacts_contacturn`).Returns(numInitialURNs + 3)
+}
+
+func TestReassignShellContactURN(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	oa := testdb.Org1.Load(t, rt)
+
+	// create a shell contact with only a WhatsApp BSUID URN
+	shell := testdb.InsertContact(t, rt, testdb.Org1, "8b2b8b4c-8e6e-4c96-9e9c-bf6b56a04e37", "Shell", "eng", models.ContactStatusActive)
+	shellURNID := testdb.InsertContactURN(t, rt, testdb.Org1, shell, "whatsapp:US.A1B2C3", 1000, nil)
+
+	// and a contact with a BSUID URN as well as a phone URN
+	other := testdb.InsertContact(t, rt, testdb.Org1, "a5b62498-f593-4dd2-a390-e2ff5b6d3c5b", "Other", "eng", models.ContactStatusActive)
+	testdb.InsertContactURN(t, rt, testdb.Org1, other, "tel:+16055747777", 1000, nil)
+	otherURNID := testdb.InsertContactURN(t, rt, testdb.Org1, other, "whatsapp:US.D4E5F6", 999, nil)
+
+	var shellModifiedOn, annModifiedOn time.Time
+	require.NoError(t, rt.DB.Get(&shellModifiedOn, `SELECT modified_on FROM contacts_contact WHERE id = $1`, shell.ID))
+	require.NoError(t, rt.DB.Get(&annModifiedOn, `SELECT modified_on FROM contacts_contact WHERE id = $1`, testdb.Ann.ID))
+
+	// noop if URN doesn't exist
+	ownerID, reassigned, err := models.ReassignShellContactURN(ctx, rt.DB, oa, testdb.Ann.ID, "whatsapp:US.XXXXXX")
+	assert.NoError(t, err)
+	assert.Equal(t, models.NilContactID, ownerID)
+	assert.False(t, reassigned)
+
+	// noop if URN is already owned by the given contact
+	ownerID, reassigned, err = models.ReassignShellContactURN(ctx, rt.DB, oa, shell.ID, "whatsapp:US.A1B2C3")
+	assert.NoError(t, err)
+	assert.Equal(t, models.NilContactID, ownerID)
+	assert.False(t, reassigned)
+
+	// URN owned by a contact with other URNs isn't reassigned
+	ownerID, reassigned, err = models.ReassignShellContactURN(ctx, rt.DB, oa, testdb.Ann.ID, "whatsapp:US.D4E5F6")
+	assert.NoError(t, err)
+	assert.Equal(t, other.ID, ownerID)
+	assert.False(t, reassigned)
+	assertdb.Query(t, rt.DB, `SELECT contact_id FROM contacts_contacturn WHERE id = $1`, otherURNID).Returns(int64(other.ID))
+
+	// URN owned by a shell contact is reassigned and both contacts have modified_on bumped
+	ownerID, reassigned, err = models.ReassignShellContactURN(ctx, rt.DB, oa, testdb.Ann.ID, "whatsapp:US.A1B2C3")
+	assert.NoError(t, err)
+	assert.Equal(t, shell.ID, ownerID)
+	assert.True(t, reassigned)
+	assertdb.Query(t, rt.DB, `SELECT contact_id FROM contacts_contacturn WHERE id = $1`, shellURNID).Returns(int64(testdb.Ann.ID))
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM contacts_contacturn WHERE contact_id = $1`, shell.ID).Returns(0)
+
+	var newModifiedOn time.Time
+	require.NoError(t, rt.DB.Get(&newModifiedOn, `SELECT modified_on FROM contacts_contact WHERE id = $1`, shell.ID))
+	assert.True(t, newModifiedOn.After(shellModifiedOn))
+	require.NoError(t, rt.DB.Get(&newModifiedOn, `SELECT modified_on FROM contacts_contact WHERE id = $1`, testdb.Ann.ID))
+	assert.True(t, newModifiedOn.After(annModifiedOn))
 }
 
 func TestLoadContactURNs(t *testing.T) {

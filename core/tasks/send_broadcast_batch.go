@@ -19,6 +19,8 @@ func init() {
 
 // SendBroadcastBatch is the task to send broadcast batches
 type SendBroadcastBatch struct {
+	BatchTask
+
 	*models.BroadcastBatch
 }
 
@@ -35,7 +37,7 @@ func (t *SendBroadcastBatch) WithAssets() models.Refresh {
 	return models.RefreshNone
 }
 
-func (t *SendBroadcastBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
+func (t *SendBroadcastBatch) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, taskID TaskID) error {
 	var bcast *models.Broadcast
 	var err error
 
@@ -51,11 +53,12 @@ func (t *SendBroadcastBatch) Perform(ctx context.Context, rt *runtime.Runtime, o
 
 	// if this broadcast was interrupted, we're done
 	if bcast.Status == models.BroadcastStatusInterrupted {
+		t.RecordComplete(ctx, rt, taskID)
 		return nil
 	}
 
-	// if this is our first batch, mark as started
-	if t.IsFirst {
+	// if we're the first batch of the set to start, mark the broadcast itself as started
+	if t.RecordStarted(ctx, rt) {
 		if err := bcast.SetStarted(ctx, rt.DB); err != nil {
 			return fmt.Errorf("error marking broadcast as started: %w", err)
 		}
@@ -71,8 +74,8 @@ func (t *SendBroadcastBatch) Perform(ctx context.Context, rt *runtime.Runtime, o
 		slog.Warn("failed to acquire locks for contacts", "contacts", skipped)
 	}
 
-	// if this is our last batch, mark broadcast as done
-	if t.IsLast {
+	// mark broadcast as done if this was the last batch to complete
+	if t.RecordComplete(ctx, rt, taskID) {
 		if err := bcast.SetCompleted(ctx, rt.DB); err != nil {
 			return fmt.Errorf("error marking broadcast as complete: %w", err)
 		}
