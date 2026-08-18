@@ -40,19 +40,17 @@ type Config struct {
 	WorkersThrottled int     `help:"the number of workers for the throttled task queue (set to 0 to disable processing of throttled tasks on this node)"`
 	WorkerOwnerLimit float64 `help:"the maximum number of workers, across nodes, available to a single owner, as a fraction of the per node worker counts"`
 
-	WebhooksTimeout              int     `help:"the timeout in milliseconds for webhook calls from engine"`
-	WebhooksMaxRetries           int     `help:"the number of times to retry a failed webhook call"`
-	WebhooksMaxBodyBytes         int     `help:"the maximum size of bytes to a webhook call response body"`
-	WebhooksInitialBackoff       int     `help:"the initial backoff in milliseconds when retrying a failed webhook call"`
-	WebhooksBackoffJitter        float64 `help:"the amount of jitter to apply to backoff times"`
-	WebhooksHealthyResponseLimit int     `help:"the limit in milliseconds for webhook response to be considered healthy"`
+	WebhooksTimeout              int      `help:"the timeout in milliseconds for webhook calls from engine"`
+	WebhooksMaxRetries           int      `help:"the number of times to retry a failed webhook call"`
+	WebhooksMaxBodyBytes         int      `help:"the maximum size of bytes to a webhook call response body"`
+	WebhooksInitialBackoff       int      `help:"the initial backoff in milliseconds when retrying a failed webhook call"`
+	WebhooksBackoffJitter        float64  `help:"the amount of jitter to apply to backoff times"`
+	WebhooksHealthyResponseLimit int      `help:"the limit in milliseconds for webhook response to be considered healthy"`
+	WebhooksBlockedDomains       []string `help:"comma separated list of domains (including subdomains) which flows can't make webhook calls to, e.g. messaging provider APIs"`
 
-	SMTPServer           string   `help:"the default SMTP configuration for sending flow emails, e.g. smtp://user%40password@server:port/?from=foo%40gmail.com"`
-	DisallowedNetworks   []string `help:"comma separated list of IP addresses and networks which engine can't make HTTP calls to"`
-	WebhookProxyURL      string   `validate:"omitempty,http_url" help:"optional URL of a forward HTTP proxy to use for user-controlled webhook calls, e.g. http://proxy.example.com:3128"`
-	MaxStepsPerSprint    int      `help:"the maximum number of steps allowed per engine sprint"`
-	MaxSprintsPerSession int      `help:"the maximum number of sprints allowed per engine session"`
-	MaxValueLength       int      `help:"the maximum size in characters for contact field values and run result values"`
+	SMTPServer         string   `help:"the default SMTP configuration for sending flow emails, e.g. smtp://user%40password@server:port/?from=foo%40gmail.com"`
+	DisallowedNetworks []string `help:"comma separated list of IP addresses and networks which engine can't make HTTP calls to"`
+	WebhookProxyURL    string   `validate:"omitempty,http_url" help:"optional URL of a forward HTTP proxy to use for user-controlled webhook calls, e.g. http://proxy.example.com:3128"`
 
 	ElasticEndpoint      string `validate:"omitempty,url" help:"the URL of your ElasticSearch instance"`
 	ElasticUsername      string `help:"the username for ElasticSearch if using basic auth"`
@@ -72,6 +70,9 @@ type Config struct {
 
 	CentrifugoEndpoint string `help:"the endpoint of the Centrifugo server" validate:"url"`
 	CentrifugoKey      string `help:"the API key for the Centrifugo server"`
+
+	EmbeddingsEndpoint string `validate:"omitempty,http_url" help:"the base URL of an OpenAI compatible embeddings service (empty disables knowledge base embeddings)"`
+	EmbeddingsModel    string `help:"the e5 model to request from the embeddings service"`
 
 	LatencyExcludedOrgs []int  `help:"comma separated list of org IDs to exclude from latency metrics"`
 	MetricsReporting    string `validate:"eq=off|eq=basic|eq=advanced"     help:"the level of metrics reporting"`
@@ -116,6 +117,10 @@ func NewDefaultConfig() *Config {
 
 		CentrifugoEndpoint: "http://localhost:8000/api",
 
+		// nanoRP hard default: no embeddings service — knowledge base indexing/search disabled until configured
+		EmbeddingsEndpoint: "",
+		EmbeddingsModel:    "intfloat/multilingual-e5-small",
+
 		WorkersRealtime:  32,
 		WorkersBatch:     8,
 		WorkersThrottled: 8,
@@ -125,11 +130,8 @@ func NewDefaultConfig() *Config {
 		WebhooksMaxBodyBytes:         256 * 1024, // 256 KiB
 		WebhooksHealthyResponseLimit: 10000,
 
-		SMTPServer:           "",
-		DisallowedNetworks:   []string{`127.0.0.0/8`, `::1`, `fe80::/10`, `fc00::/7`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16`, `0.0.0.0/8`},
-		MaxStepsPerSprint:    250,
-		MaxSprintsPerSession: 250,
-		MaxValueLength:       640,
+		SMTPServer:         "",
+		DisallowedNetworks: []string{`127.0.0.0/8`, `::1`, `fe80::/10`, `fc00::/7`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16`, `0.0.0.0/8`},
 
 		ElasticEndpoint:      "",
 		ElasticUsername:      "",
@@ -172,8 +174,9 @@ func NewDefaultConfig() *Config {
 	return conf
 }
 
-func LoadConfig(args ...string) (*Config, error) {
-	c := NewDefaultConfig()
+// LoadConfig loads configuration from a config file, environment variables and command line args, on top of the
+// given base config, e.g. NewDefaultConfig().
+func LoadConfig(c *Config, args ...string) (*Config, error) {
 	loader := ezconf.NewLoader(c, "mailroom", "Mailroom - handler for RapidPro", []string{"mailroom.toml"})
 	if len(args) > 0 { // allow tests to pass in args
 		loader.SetArgs(args...)

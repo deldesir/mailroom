@@ -38,7 +38,6 @@ func TestSessionCreationAndUpdating(t *testing.T) {
 
 	defer dates.SetNowFunc(time.Now)
 	defer random.SetGenerator(random.DefaultGenerator)
-	defer testsuite.Reset(t, rt, testsuite.ResetAll) // modifies contacts
 
 	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/session_test_flows.json")
 	flow := testFlows[0]
@@ -74,16 +73,16 @@ func TestSessionCreationAndUpdating(t *testing.T) {
 
 	// check events were persisted to DynamoDB
 	rt.Dynamo.History.Flush()
-	dyntest.AssertCount(t, rt.Dynamo.History.Client(), "TestHistory", 6)
+	dyntest.AssertCount(t, rt.Dynamo.History.Client(), rt.Dynamo.History.Table(), 6)
 
 	testsuite.AssertContactFires(t, rt, testdb.Bob.ID, map[string]time.Time{
 		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 10, 0, time.UTC), // 10 minutes in future
-		fmt.Sprintf("S:%s", scBob.Session.UUID()): time.Date(2025, 3, 28, 9, 55, 36, 0, time.UTC),  // 30 days + rand(1 - 24 hours) in future
+		fmt.Sprintf("S:%s", scBob.Session.UUID()): time.Date(2025, 3, 28, 13, 12, 19, 0, time.UTC), // 30 days + rand(1 - 24 hours) in future
 	})
 	testsuite.AssertContactFires(t, rt, testdb.Dan.ID, map[string]time.Time{
-		fmt.Sprintf("T:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 50, 28, 0, time.UTC), // 5 minutes in future
-		fmt.Sprintf("E:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 24, 0, time.UTC), // 10 minutes in future
-		fmt.Sprintf("S:%s", scDan.Session.UUID()): time.Date(2025, 3, 28, 12, 9, 24, 0, time.UTC),  // 30 days + rand(1 - 24 hours) in future
+		fmt.Sprintf("T:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 50, 30, 0, time.UTC), // 5 minutes in future
+		fmt.Sprintf("E:%s", scDan.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 25, 0, time.UTC), // 10 minutes in future
+		fmt.Sprintf("S:%s", scDan.Session.UUID()): time.Date(2025, 3, 28, 2, 41, 9, 0, time.UTC),   // 30 days + rand(1 - 24 hours) in future
 	})
 
 	scene := testsuite.ResumeSession(t, rt, oa, testdb.Bob, "no")
@@ -103,8 +102,8 @@ func TestSessionCreationAndUpdating(t *testing.T) {
 
 	// check we have a new contact fire for wait expiration but not timeout (wait doesn't have a timeout)
 	testsuite.AssertContactFires(t, rt, testdb.Bob.ID, map[string]time.Time{
-		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 43, 0, time.UTC), // updated
-		fmt.Sprintf("S:%s", scBob.Session.UUID()): time.Date(2025, 3, 28, 9, 55, 36, 0, time.UTC),  // unchanged
+		fmt.Sprintf("E:%s", scBob.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 45, 0, time.UTC), // updated
+		fmt.Sprintf("S:%s", scBob.Session.UUID()): time.Date(2025, 3, 28, 13, 12, 19, 0, time.UTC), // unchanged
 	})
 
 	scene = testsuite.ResumeSession(t, rt, oa, testdb.Bob, "yes")
@@ -128,8 +127,6 @@ func TestSessionCreationAndUpdating(t *testing.T) {
 func TestSingleSprintSession(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetValkey|testsuite.ResetData|testsuite.ResetDynamo)
-
 	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/session_test_flows.json")
 	flow := testFlows[1]
 
@@ -148,8 +145,32 @@ func TestSingleSprintSession(t *testing.T) {
 			"contact_id": int64(testdb.Bob.ID), "status": "C", "responded": false, "current_node_uuid": nil,
 		})
 
+	// run exited in its final sprint but its full path should still have been written to the database
+	assertdb.Query(t, rt.DB, `SELECT array_to_string(path_nodes, ','), array_length(path_times, 1) FROM flows_flowrun WHERE session_uuid = $1`, scenes[0].SessionUUID()).
+		Columns(map[string]any{"array_to_string": "7e5c2d93-dfcd-4531-8048-8ec7aa5f6cd6", "array_length": int64(1)})
+
+	// but the session output should have been compacted so the exited run has no path
+	outputRuns := readSessionOutputRuns(t, rt, scenes[0].SessionUUID())
+	assert.Len(t, outputRuns, 1)
+	assert.NotContains(t, outputRuns[0], "path")
+	assert.NotContains(t, outputRuns[0], "locals")
+	assert.NotContains(t, outputRuns[0], "webhook")
+
 	// check we have no contact fires
 	testsuite.AssertContactFires(t, rt, testdb.Bob.ID, map[string]time.Time{})
+}
+
+// reads the stored output of the given session and returns its runs as raw JSON maps
+func readSessionOutputRuns(t *testing.T, rt *runtime.Runtime, sessionUUID core.SessionUUID) []map[string]json.RawMessage {
+	var output string
+	err := rt.DB.Get(&output, `SELECT output FROM flows_flowsession WHERE uuid = $1`, sessionUUID)
+	require.NoError(t, err)
+
+	envelope := struct {
+		Runs []map[string]json.RawMessage `json:"runs"`
+	}{}
+	require.NoError(t, json.Unmarshal([]byte(output), &envelope))
+	return envelope.Runs
 }
 
 func TestSessionWithSubflows(t *testing.T) {
@@ -160,7 +181,6 @@ func TestSessionWithSubflows(t *testing.T) {
 
 	defer dates.SetNowFunc(time.Now)
 	defer random.SetGenerator(random.DefaultGenerator)
-	defer testsuite.Reset(t, rt, testsuite.ResetValkey|testsuite.ResetData|testsuite.ResetDynamo)
 
 	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/session_test_flows.json")
 	parent, child := testFlows[2], testFlows[3]
@@ -193,10 +213,16 @@ func TestSessionWithSubflows(t *testing.T) {
 	assertdb.Query(t, rt.DB, `SELECT status FROM flows_flowrun WHERE session_uuid = $1 AND start_id IS NULL`, scene.SessionUUID()).
 		Columns(map[string]any{"status": "W"})
 
+	// neither run has exited so both should still have their paths in the session output
+	outputRuns := readSessionOutputRuns(t, rt, scene.SessionUUID())
+	assert.Len(t, outputRuns, 2)
+	assert.Contains(t, outputRuns[0], "path")
+	assert.Contains(t, outputRuns[1], "path")
+
 	// check we have a contact fire for wait expiration but not timeout
 	testsuite.AssertContactFires(t, rt, testdb.Ann.ID, map[string]time.Time{
 		fmt.Sprintf("E:%s", scene.Session.UUID()): time.Date(2025, 2, 25, 16, 55, 16, 0, time.UTC), // 10 minutes in future
-		fmt.Sprintf("S:%s", scene.Session.UUID()): time.Date(2025, 3, 28, 9, 55, 36, 0, time.UTC),  // 30 days + rand(1 - 24 hours) in future
+		fmt.Sprintf("S:%s", scene.Session.UUID()): time.Date(2025, 3, 28, 13, 12, 19, 0, time.UTC), // 30 days + rand(1 - 24 hours) in future
 	})
 
 	mc, contact, _ = testdb.Ann.Load(t, rt, oa)
@@ -205,7 +231,7 @@ func TestSessionWithSubflows(t *testing.T) {
 	assert.Equal(t, scene.Session.UUID(), modelSession.UUID)
 	assert.Equal(t, child.UUID, modelSession.CurrentFlowUUID)
 
-	msg2 := core.NewMsgIn(testdb.Ann.URN, nil, "yes", nil, "")
+	msg2 := core.NewMsgIn(testdb.Ann.URN, nil, "yes", nil, "", nil)
 	scene = runner.NewScene(mc, contact)
 
 	err = scene.ResumeSession(ctx, rt, oa, modelSession, resumes.NewMsg(events.NewMsgReceived(msg2, "")))
@@ -216,14 +242,113 @@ func TestSessionWithSubflows(t *testing.T) {
 	assert.Equal(t, flows.SessionStatusCompleted, scene.Session.Status())
 	assert.Equal(t, time.Duration(0), scene.WaitTimeout) // flow has ended
 
+	// both runs exited in their final sprint but their full paths should still have been written to the database
+	assertdb.Query(t, rt.DB, `SELECT array_to_string(path_nodes, ','), array_length(path_times, 1) FROM flows_flowrun WHERE session_uuid = $1 AND start_id IS NOT NULL`, scene.SessionUUID()).
+		Columns(map[string]any{
+			"array_to_string": "69710037-4f39-495a-91b2-2eae89ca69f0,ef926afe-d42a-4d5b-8867-9dbfaeb5f176,2886a2a0-ad95-4811-81ed-f955c8e6f239",
+			"array_length":    int64(3),
+		})
+	assertdb.Query(t, rt.DB, `SELECT array_to_string(path_nodes, ','), array_length(path_times, 1) FROM flows_flowrun WHERE session_uuid = $1 AND start_id IS NULL`, scene.SessionUUID()).
+		Columns(map[string]any{
+			"array_to_string": "7525b836-b61c-4fbb-9b89-8539d75d7304,03068be2-4748-48e5-b19b-228b5412ebd5",
+			"array_length":    int64(2),
+		})
+
+	// but the session output should have been compacted so the exited runs have no paths
+	outputRuns = readSessionOutputRuns(t, rt, scene.SessionUUID())
+	assert.Len(t, outputRuns, 2)
+	for _, r := range outputRuns {
+		assert.NotContains(t, r, "path")
+		assert.NotContains(t, r, "locals")
+		assert.NotContains(t, r, "webhook")
+	}
+
 	// check we have no contact fires for wait expiration or timeout
 	testsuite.AssertContactFires(t, rt, testdb.Ann.ID, map[string]time.Time{})
 }
 
-func TestBulkCommitPublishesNotifications(t *testing.T) {
+func TestBulkCommitPublishesEvents(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
+	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/session_test_flows.json")
+	flow := testFlows[0]
+
+	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshFlows)
+	require.NoError(t, err)
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	// someone is watching Ann's history socket
+	socket := models.HistorySocket(testdb.Ann.UUID)
+	_, err = vc.Do("SET", centrifugo.SubscriptionKey(socket), "1")
+	require.NoError(t, err)
+
+	trig := triggers.NewBuilder(flow.Reference()).Manual().Build()
+	testsuite.StartSessions(t, rt, oa, []*testdb.Contact{testdb.Ann}, trig)
+
+	// the subscribed socket received the persisted events plus the ephemeral contact_flow_changed
+	sent := testsuite.CentrifugoHistory(t, rt, socket)
+	types := make([]string, len(sent))
+	for i, data := range sent {
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		types[i] = decoded["type"].(string)
+	}
+	assert.Contains(t, types, "contact_flow_changed")
+
+	// but ephemeral events are never persisted
+	rt.Dynamo.History.Flush()
+	ephemeral := 0
+	for _, tp := range types {
+		if tp == "contact_flow_changed" || tp == "contact_last_seen_changed" {
+			ephemeral++
+		}
+	}
+	dyntest.AssertCount(t, rt.Dynamo.History.Client(), rt.Dynamo.History.Table(), len(types)-ephemeral)
+
+	// helper returning the contact_flow_changed events published since the last call
+	seen := len(sent)
+	flowChanges := func() []map[string]any {
+		sent := testsuite.CentrifugoHistory(t, rt, socket)
+		changes := []map[string]any{}
+		for _, data := range sent[seen:] {
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(data, &decoded))
+			if decoded["type"] == "contact_flow_changed" {
+				changes = append(changes, decoded)
+			}
+		}
+		seen = len(sent)
+		return changes
+	}
+
+	// answering the first question keeps the contact in the same flow so no new contact_flow_changed
+	testsuite.ResumeSession(t, rt, oa, testdb.Ann, "yes")
+	assert.Len(t, flowChanges(), 0)
+
+	// answering the second question completes the session, publishing a contact_flow_changed with no flow
+	testsuite.ResumeSession(t, rt, oa, testdb.Ann, "yes")
+	changes := flowChanges()
+	require.Len(t, changes, 1)
+	assert.Nil(t, changes[0]["flow"])
+
+	// restarting the contact in the flow publishes a contact_flow_changed with that flow
+	testsuite.StartSessions(t, rt, oa, []*testdb.Contact{testdb.Ann}, trig)
+	changes = flowChanges()
+	require.Len(t, changes, 1)
+	assert.Equal(t, map[string]any{"uuid": string(flow.UUID), "name": "Two Questions"}, changes[0]["flow"])
+
+	// interrupting the session publishes a contact_flow_changed with no flow
+	_, _, err = runner.InterruptWithLock(ctx, rt, oa, []models.ContactID{testdb.Ann.ID}, nil, flows.SessionStatusInterrupted)
+	require.NoError(t, err)
+	changes = flowChanges()
+	require.Len(t, changes, 1)
+	assert.Nil(t, changes[0]["flow"])
+}
+
+func TestBulkCommitPublishesNotifications(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
 
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	require.NoError(t, err)
@@ -262,6 +387,45 @@ func TestBulkCommitPublishesNotifications(t *testing.T) {
 	assert.Equal(t, false, decoded["is_seen"])
 }
 
+func TestBulkCommitPublishesFlowActivity(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/session_test_flows.json")
+	other, parent, child := testFlows[1], testFlows[2], testFlows[3]
+
+	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshFlows)
+	require.NoError(t, err)
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	// all three flows are open in editors
+	parentSocket := models.FlowSocket(parent.UUID)
+	childSocket := models.FlowSocket(child.UUID)
+	otherSocket := models.FlowSocket(other.UUID)
+	for _, s := range []string{parentSocket, childSocket, otherSocket} {
+		_, err = vc.Do("SET", centrifugo.SubscriptionKey(s), "1")
+		require.NoError(t, err)
+	}
+
+	// start two contacts in a flow that enters a subflow, committed as a single batch
+	trig := triggers.NewBuilder(parent.Reference()).Manual().Build()
+	testsuite.StartSessions(t, rt, oa, []*testdb.Contact{testdb.Bob, testdb.Cat}, trig)
+
+	// both scenes' segments in the parent collapse to a single activity ping on its socket
+	parentSent := testsuite.CentrifugoHistory(t, rt, parentSocket)
+	require.Len(t, parentSent, 1)
+	assert.JSONEq(t, `{"type": "activity"}`, string(parentSent[0]))
+
+	// and traversing into the subflow pinged its socket too, again just once
+	childSent := testsuite.CentrifugoHistory(t, rt, childSocket)
+	require.Len(t, childSent, 1)
+	assert.JSONEq(t, `{"type": "activity"}`, string(childSent[0]))
+
+	// while the untraversed flow's socket got nothing
+	assert.Empty(t, testsuite.CentrifugoHistory(t, rt, otherSocket))
+}
+
 func TestSessionFailedStart(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
@@ -270,7 +434,6 @@ func TestSessionFailedStart(t *testing.T) {
 
 	defer dates.SetNowFunc(time.Now)
 	defer random.SetGenerator(random.DefaultGenerator)
-	defer testsuite.Reset(t, rt, testsuite.ResetValkey|testsuite.ResetData|testsuite.ResetDynamo)
 
 	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/ping_pong.json")
 	ping, pong := testFlows[0], testFlows[1]
@@ -282,7 +445,7 @@ func TestSessionFailedStart(t *testing.T) {
 	scenes := testsuite.StartSessions(t, rt, oa, []*testdb.Contact{testdb.Ann}, trig)
 
 	assert.Equal(t, flows.SessionStatusFailed, scenes[0].Session.Status())
-	assert.Len(t, scenes[0].Session.Runs(), 251)
+	assert.Len(t, scenes[0].Session.Runs(), 250)
 
 	// check session in database
 	assertdb.Query(t, rt.DB, `SELECT status, session_type, current_flow_uuid FROM flows_flowsession`).
@@ -290,10 +453,10 @@ func TestSessionFailedStart(t *testing.T) {
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowsession WHERE ended_on IS NOT NULL`).Returns(1)
 
 	// check the state of all the created runs
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowrun`).Returns(251)
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowrun WHERE flow_id = $1`, ping.ID).Returns(126)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowrun`).Returns(250)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowrun WHERE flow_id = $1`, ping.ID).Returns(125)
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowrun WHERE flow_id = $1`, pong.ID).Returns(125)
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowrun WHERE status = 'F' AND exited_on IS NOT NULL`).Returns(251)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM flows_flowrun WHERE status = 'F' AND exited_on IS NOT NULL`).Returns(250)
 
 	// check the contact
 	assertdb.Query(t, rt.DB, `SELECT current_session_uuid, current_flow_id FROM contacts_contact WHERE id = $1`, testdb.Ann.ID).Columns(map[string]any{
@@ -307,8 +470,6 @@ func TestFlowStats(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 	vc := rt.VK.Get()
 	defer vc.Close()
-
-	defer testsuite.Reset(t, rt, testsuite.ResetValkey|testsuite.ResetData|testsuite.ResetDynamo)
 
 	defer random.SetGenerator(random.DefaultGenerator)
 	random.SetGenerator(random.NewSeededGenerator(123))
@@ -347,7 +508,7 @@ func TestFlowStats(t *testing.T) {
 
 	// all 3 contacts went from first msg to the color split - no operands recorded for this segment
 	assertvk.ZRange(t, vc, "recent_contacts:5fd2e537-0534-4c12-8425-bef87af09d46:072b95b3-61c3-4e0e-8dd1-eb7481083f94", 0, -1,
-		[]string{"bzXDPJHreu|10001|", "PYVP90uqWA|10003|", "RtWDACk2SS|10002|"},
+		[]string{"GTMx3lXL/f|10001|", "olWKCThhRw|10003|", "rXq9q//T/j|10002|"},
 	)
 
 	testsuite.ResumeSession(t, rt, oa, testdb.Bob, "blue")
@@ -396,17 +557,17 @@ func TestFlowStats(t *testing.T) {
 
 	// check recent operands for color split :: Blue exit -> next node
 	assertvk.ZRange(t, vc, "recent_contacts:c02fc3ba-369a-4c87-9bc4-c3b376bda6d2:57b50d33-2b5a-4726-82de-9848c61eff6e", 0, -1,
-		[]string{"5dyuJzp6MB|10001|blue", "ZZ/N3THKKL|10003|BLUE"},
+		[]string{"rMHV0HyTSf|10001|blue", "KijgYoWRmT|10003|BLUE"},
 	)
 
 	// check recent operands for color split :: Other exit -> next node
 	assertvk.ZRange(t, vc, "recent_contacts:ea6c38dc-11e2-4616-9f3e-577e44765d44:8712db6b-25ff-4789-892c-581f24eeeb95", 0, -1,
-		[]string{"bPiuaeAX6V|10002|teal", "/MpdX9skhq|10002|azure"},
+		[]string{"lgugY4Zd6F|10002|teal", "Cd/nNWeyjN|10002|azure"},
 	)
 
 	// check recent operands for split by expression :: Other exit -> next node
 	assertvk.ZRange(t, vc, "recent_contacts:2b698218-87e5-4ab8-922e-e65f91d12c10:88d8bf00-51ce-4e5e-aae8-4f957a0761a0", 0, -1,
-		[]string{"QFoOgV99Av|10001|0", "nkcW6vAYAn|10003|0"},
+		[]string{"MNVFZUfmz8|10001|0", "jNgwl/7786|10003|0"},
 	)
 
 	testsuite.ResumeSession(t, rt, oa, testdb.Cat, "blue")
@@ -416,8 +577,6 @@ func TestFlowStats(t *testing.T) {
 
 func TestResumeSession(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetStorage|testsuite.ResetDynamo)
 
 	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshOrg)
 	require.NoError(t, err)
@@ -453,7 +612,7 @@ func TestResumeSession(t *testing.T) {
 			expectedStatus:      models.SessionStatusWaiting,
 			expectedCurrentFlow: string(flow.UUID()),
 			expectedRunStatus:   models.RunStatusWaiting,
-			expectedNodeUUID:    "e61f4173-732f-48bb-a767-05899e15f03b",
+			expectedNodeUUID:    "dfdda3da-bf5a-43d4-a81a-349bd51cc035",
 			expectedMsgOut:      "Good choice, I like Red too! What is your favorite beer?",
 			expectedPathLength:  4,
 		},
@@ -462,7 +621,7 @@ func TestResumeSession(t *testing.T) {
 			expectedStatus:      models.SessionStatusWaiting,
 			expectedCurrentFlow: string(flow.UUID()),
 			expectedRunStatus:   models.RunStatusWaiting,
-			expectedNodeUUID:    "bd5996af-4fc0-4ff3-bb77-1ffd50faac7b",
+			expectedNodeUUID:    "65445d3d-25f9-490b-9649-0af057956e46",
 			expectedMsgOut:      "Mmmmm... delicious Mutzig. If only they made red Mutzig! Lastly, what is your name?",
 			expectedPathLength:  6,
 		},
@@ -498,20 +657,18 @@ func TestResumeSession(t *testing.T) {
 func TestBroadcastWithLock(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetDynamo)
-
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	require.NoError(t, err)
 
-	b1 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401c", "eng", map[i18n.Language]string{"eng": "Hi", "spa": "Hola"}, nil, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
+	b1 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401c", "eng", map[i18n.Language]string{"eng": "Hi", "spa": "Hola"}, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
 
 	bcast, err := models.GetBroadcastByID(ctx, rt.DB, b1.ID)
 	require.NoError(t, err)
 
-	test.MockUniverse()
+	defer test.MockUniverse()()
 
-	batch1 := bcast.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID}, true, false)
-	batch2 := bcast.CreateBatch([]models.ContactID{testdb.Cat.ID}, false, true)
+	batch1 := bcast.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID})
+	batch2 := bcast.CreateBatch([]models.ContactID{testdb.Cat.ID})
 
 	scenes, skipped, err := runner.BroadcastWithLock(ctx, rt, oa, bcast, batch1, models.StartModeBackground)
 	assert.NoError(t, err)
@@ -536,7 +693,7 @@ func TestBroadcastWithLock(t *testing.T) {
 			},
 			"OrgID": 1,
 			"PK": "con#b699a406-7e44-49be-9f01-1a82893e8a10",
-			"SK": "evt#01969b47-1523-76f8-bd38-d266ec8d3716"
+			"SK": "evt#01969b47-1523-76f8-98c7-1f0d5859f77e"
 		},
 		{
 			"Data": {
@@ -555,7 +712,7 @@ func TestBroadcastWithLock(t *testing.T) {
 			},
 			"OrgID": 1,
 			"PK": "con#a393abc0-283d-4c9b-a1b3-641a035c34bf",
-			"SK": "evt#01969b47-096b-76f8-ae7f-f8b243c49ff5"
+			"SK": "evt#01969b47-096b-76f8-924e-9de1a11831b3"
 		}
 	]`), jsonx.MustMarshal(testsuite.GetHistoryItems(t, rt, false, time.Time{})))
 
@@ -573,11 +730,11 @@ func TestBroadcastWithLock(t *testing.T) {
 	testdb.InsertWaitingSession(t, rt, testdb.Org1, testdb.Bob, models.FlowTypeMessaging, nil, testdb.Favorites)
 
 	// test skip mode: Ann and Bob have sessions so should be skipped, Cat should receive
-	b2 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401d", "eng", map[i18n.Language]string{"eng": "Skippable"}, nil, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
+	b2 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401d", "eng", map[i18n.Language]string{"eng": "Skippable"}, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
 	bcast2, err := models.GetBroadcastByID(ctx, rt.DB, b2.ID)
 	require.NoError(t, err)
 
-	skipBatch := bcast2.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID, testdb.Cat.ID}, true, true)
+	skipBatch := bcast2.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID, testdb.Cat.ID})
 	scenes, skipped, err = runner.BroadcastWithLock(ctx, rt, oa, bcast2, skipBatch, models.StartModeSkip)
 	assert.NoError(t, err)
 	assert.Len(t, skipped, 0) // all contacts were locked successfully
@@ -596,11 +753,11 @@ func TestBroadcastWithLock(t *testing.T) {
 	testsuite.AssertContactInFlow(t, rt, testdb.Bob, testdb.Favorites)
 
 	// test interrupt mode: Ann and Bob have sessions which should be interrupted, all should receive
-	b3 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401e", "eng", map[i18n.Language]string{"eng": "Interrupting"}, nil, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
+	b3 := testdb.InsertBroadcast(t, rt, testdb.Org1, "0199877e-0ed2-790b-b474-35099cea401e", "eng", map[i18n.Language]string{"eng": "Interrupting"}, models.NilScheduleID, []*testdb.Contact{testdb.Ann, testdb.Bob, testdb.Cat}, nil)
 	bcast3, err := models.GetBroadcastByID(ctx, rt.DB, b3.ID)
 	require.NoError(t, err)
 
-	intBatch := bcast3.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID, testdb.Cat.ID}, true, true)
+	intBatch := bcast3.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID, testdb.Cat.ID})
 	scenes, skipped, err = runner.BroadcastWithLock(ctx, rt, oa, bcast3, intBatch, models.StartModeInterrupt)
 	assert.NoError(t, err)
 	assert.Len(t, skipped, 0)

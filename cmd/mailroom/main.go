@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/nyaruka/mailroom/v26/cmd"
+	"github.com/nyaruka/mailroom/v26/runtime"
 
 	_ "github.com/nyaruka/mailroom/v26/core/runner/handlers"
 	_ "github.com/nyaruka/mailroom/v26/core/runner/hooks"
@@ -22,10 +23,9 @@ import (
 	_ "github.com/nyaruka/mailroom/v26/web/msg"
 	_ "github.com/nyaruka/mailroom/v26/web/notification"
 	_ "github.com/nyaruka/mailroom/v26/web/org"
-	_ "github.com/nyaruka/mailroom/v26/web/po"
 	_ "github.com/nyaruka/mailroom/v26/web/public"
 	_ "github.com/nyaruka/mailroom/v26/web/simulation"
-	_ "github.com/nyaruka/mailroom/v26/web/system"
+	_ "github.com/nyaruka/mailroom/v26/web/socket"
 	_ "github.com/nyaruka/mailroom/v26/web/ticket"
 )
 
@@ -36,5 +36,5 @@ var (
 )
 
 func main() {
-	cmd.Run(cmd.Service(version, date))
+	cmd.Run(cmd.Service(runtime.NewDefaultConfig(), version, date))
 }

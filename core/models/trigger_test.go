@@ -6,7 +6,7 @@ import (
 
 	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/assets"
-	"github.com/nyaruka/goflow/flows"
+	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/testsuite"
 	"github.com/nyaruka/mailroom/v26/testsuite/testdb"
@@ -16,8 +16,6 @@ import (
 
 func TestLoadTriggers(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	rt.DB.MustExec(`DELETE FROM triggers_trigger`)
 	farmersGroup := testdb.InsertContactGroup(t, rt, testdb.Org1, assets.GroupUUID(uuids.NewV4()), "Farmers", "")
@@ -122,6 +120,7 @@ func TestLoadTriggers(t *testing.T) {
 		actual := oa.Triggers()[i]
 
 		assert.Equal(t, tc.id, actual.ID(), "id mismatch in trigger #%d", i)
+		assert.NotEmpty(t, actual.UUID(), "uuid not set on trigger #%d", i)
 		assert.Equal(t, tc.type_, actual.TriggerType(), "type mismatch in trigger #%d", i)
 		assert.Equal(t, tc.flowID, actual.FlowID(), "flow id mismatch in trigger #%d", i)
 		assert.Equal(t, tc.keywords, actual.Keywords(), "keywords mismatch in trigger #%d", i)
@@ -136,8 +135,6 @@ func TestLoadTriggers(t *testing.T) {
 
 func TestFindMatchingMsgTrigger(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	rt.DB.MustExec(`DELETE FROM triggers_trigger`)
 
@@ -171,7 +168,7 @@ func TestFindMatchingMsgTrigger(t *testing.T) {
 	tcs := []struct {
 		text              string
 		channel           *models.Channel
-		contact           *flows.Contact
+		contact           *core.Contact
 		expectedTriggerID models.TriggerID
 		expectedKeyword   string
 	}{
@@ -209,8 +206,6 @@ func TestFindMatchingMsgTrigger(t *testing.T) {
 func TestFindMatchingIncomingCallTrigger(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	doctorsAndNotTestersTriggerID := testdb.InsertIncomingCallTrigger(t, rt, testdb.Org1, testdb.Favorites, []*testdb.Group{testdb.DoctorsGroup}, []*testdb.Group{testdb.TestersGroup}, nil)
 	doctorsTriggerID := testdb.InsertIncomingCallTrigger(t, rt, testdb.Org1, testdb.Favorites, []*testdb.Group{testdb.DoctorsGroup}, nil, nil)
 	notTestersTriggerID := testdb.InsertIncomingCallTrigger(t, rt, testdb.Org1, testdb.Favorites, nil, []*testdb.Group{testdb.TestersGroup}, nil)
@@ -232,7 +227,7 @@ func TestFindMatchingIncomingCallTrigger(t *testing.T) {
 	facebookChannel, _ := models.GetChannelByID(ctx, rt.DB.DB, testdb.FacebookChannel.ID)
 
 	tcs := []struct {
-		contact           *flows.Contact
+		contact           *core.Contact
 		channel           *models.Channel
 		expectedTriggerID models.TriggerID
 	}{
@@ -253,8 +248,6 @@ func TestFindMatchingIncomingCallTrigger(t *testing.T) {
 
 func TestFindMatchingMissedCallTrigger(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	testdb.InsertCatchallTrigger(t, rt, testdb.Org1, testdb.SingleMessage, nil, nil, nil)
 
@@ -288,8 +281,6 @@ func TestFindMatchingMissedCallTrigger(t *testing.T) {
 func TestFindMatchingNewConversationTrigger(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
-
 	twilioTriggerID := testdb.InsertNewConversationTrigger(t, rt, testdb.Org1, testdb.Favorites, testdb.TwilioChannel)
 	noChTriggerID := testdb.InsertNewConversationTrigger(t, rt, testdb.Org1, testdb.Favorites, nil)
 
@@ -314,8 +305,6 @@ func TestFindMatchingNewConversationTrigger(t *testing.T) {
 
 func TestFindMatchingReferralTrigger(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	fooID := testdb.InsertReferralTrigger(t, rt, testdb.Org1, testdb.Favorites, "foo", testdb.FacebookChannel)
 	barID := testdb.InsertReferralTrigger(t, rt, testdb.Org1, testdb.Favorites, "bar", nil)
@@ -347,64 +336,8 @@ func TestFindMatchingReferralTrigger(t *testing.T) {
 	}
 }
 
-func TestFindMatchingOptInTrigger(t *testing.T) {
-	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
-
-	twilioTriggerID := testdb.InsertOptInTrigger(t, rt, testdb.Org1, testdb.Favorites, testdb.TwilioChannel)
-	noChTriggerID := testdb.InsertOptInTrigger(t, rt, testdb.Org1, testdb.Favorites, nil)
-
-	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshTriggers)
-	require.NoError(t, err)
-
-	tcs := []struct {
-		channelID         models.ChannelID
-		expectedTriggerID models.TriggerID
-	}{
-		{testdb.TwilioChannel.ID, twilioTriggerID},
-		{testdb.VonageChannel.ID, noChTriggerID},
-	}
-
-	for i, tc := range tcs {
-		channel := oa.ChannelByID(tc.channelID)
-		trigger := models.FindMatchingOptInTrigger(oa, channel)
-
-		assertTrigger(t, tc.expectedTriggerID, trigger, "trigger mismatch in test case #%d", i)
-	}
-}
-
-func TestFindMatchingOptOutTrigger(t *testing.T) {
-	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
-
-	twilioTriggerID := testdb.InsertOptOutTrigger(t, rt, testdb.Org1, testdb.Favorites, testdb.TwilioChannel)
-	noChTriggerID := testdb.InsertOptOutTrigger(t, rt, testdb.Org1, testdb.Favorites, nil)
-
-	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshTriggers)
-	require.NoError(t, err)
-
-	tcs := []struct {
-		channelID         models.ChannelID
-		expectedTriggerID models.TriggerID
-	}{
-		{testdb.TwilioChannel.ID, twilioTriggerID},
-		{testdb.VonageChannel.ID, noChTriggerID},
-	}
-
-	for i, tc := range tcs {
-		channel := oa.ChannelByID(tc.channelID)
-		trigger := models.FindMatchingOptOutTrigger(oa, channel)
-
-		assertTrigger(t, tc.expectedTriggerID, trigger, "trigger mismatch in test case #%d", i)
-	}
-}
-
 func TestArchiveContactTriggers(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	everybodyID := testdb.InsertKeywordTrigger(t, rt, testdb.Org1, testdb.Favorites, []string{"join"}, models.MatchFirst, nil, nil, nil)
 	annOnly1ID := testdb.InsertScheduledTrigger(t, rt, testdb.Org1, testdb.Favorites, testdb.InsertSchedule(t, rt, testdb.Org1, models.RepeatPeriodMonthly, time.Now()), nil, nil, []*testdb.Contact{testdb.Ann})

@@ -52,7 +52,7 @@ func (t *BulkCampaignTrigger) WithAssets() models.Refresh {
 	return models.RefreshCampaigns
 }
 
-func (t *BulkCampaignTrigger) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
+func (t *BulkCampaignTrigger) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, taskID TaskID) error {
 	p := oa.CampaignPointByID(t.PointID)
 	if p == nil || p.FireVersion != t.FireVersion {
 		slog.Info("skipping campaign trigger for point that no longer exists or has been updated", "point", t.PointID, "fire_version", t.FireVersion)
@@ -114,30 +114,30 @@ func (t *BulkCampaignTrigger) triggerFlow(ctx context.Context, rt *runtime.Runti
 	}
 
 	if flow.FlowType() == models.FlowTypeVoice {
-		contacts, err := models.LoadContacts(ctx, rt.ReadonlyDB, oa, t.ContactIDs)
+		mcs, err := models.LoadContacts(ctx, rt.ReadonlyDB, oa, t.ContactIDs)
 		if err != nil {
 			return nil, fmt.Errorf("error loading contacts: %w", err)
 		}
 
-		// for each contacts, request a call start
-		for _, contact := range contacts {
-			if p.StartMode == models.StartModeSkip && contact.CurrentSessionUUID() != "" {
+		// for each contact, request a call start
+		for _, mc := range mcs {
+			if p.StartMode == models.StartModeSkip && mc.CurrentSessionUUID() != "" {
 				continue
 			}
 
 			ctx, cancel := context.WithTimeout(ctx, time.Minute)
-			call, err := ivr.RequestCall(ctx, rt, oa, contact, triggerBuilder())
+			call, err := ivr.RequestCall(ctx, rt, oa, mc, triggerBuilder())
 			cancel()
 			if err != nil {
-				slog.Error("error requesting call for campaign point", "contact", contact.UUID(), "point", t.PointID, "error", err)
+				slog.Error("error requesting call for campaign point", "contact", mc.UUID(), "point", t.PointID, "error", err)
 				continue
 			}
 			if call == nil {
-				slog.Debug("call start skipped, no suitable channel", "contact", contact.UUID(), "point", t.PointID)
+				slog.Debug("call start skipped, no suitable channel", "contact", mc.UUID(), "point", t.PointID)
 				continue
 			}
 
-			started = append(started, contact.ID())
+			started = append(started, mc.ID())
 		}
 	} else {
 		scenes, skipped, err := runner.StartWithLock(ctx, rt, oa, contactIDs, triggerBuilder, p.StartMode, models.NilStartID)
@@ -160,7 +160,7 @@ func (t *BulkCampaignTrigger) triggerFlow(ctx context.Context, rt *runtime.Runti
 }
 
 func (t *BulkCampaignTrigger) triggerBroadcast(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, p *models.CampaignPoint, contactIDs []models.ContactID) ([]models.ContactID, error) {
-	bcast := models.NewBroadcast(oa.OrgID(), p.Translations, i18n.Language(p.BaseLanguage), true, models.NilOptInID, nil, contactIDs, nil, "", models.NoExclusions, models.NilUserID)
+	bcast := models.NewBroadcast(oa.OrgID(), p.Translations, i18n.Language(p.BaseLanguage), true, nil, contactIDs, nil, "", models.NoExclusions, models.NilUserID)
 	bcast.TemplateID = p.TemplateID
 	bcast.TemplateVariables = p.TemplateVariables
 

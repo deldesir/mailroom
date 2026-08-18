@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -25,8 +26,6 @@ import (
 
 func TestWebhookCalled(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
 
 	rt.HTTP.Engine.Transport = httpx.WithMocks(http.DefaultTransport, map[string][]*httpx.MockResponse{
 		"http://rapidpro.io/": {
@@ -57,6 +56,8 @@ type failingWebhookService struct {
 	delay time.Duration
 }
 
+func (s *failingWebhookService) IsBlocked(u *url.URL) bool { return false }
+
 func (s *failingWebhookService) Call(request *http.Request) (*httpx.Trace, error) {
 	return &httpx.Trace{
 		Request:       request,
@@ -74,7 +75,6 @@ func TestUnhealthyWebhookCalls(t *testing.T) {
 	vc := rt.VK.Get()
 	defer vc.Close()
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetDynamo|testsuite.ResetValkey)
 	defer dates.SetNowFunc(time.Now)
 
 	dates.SetNowFunc(dates.NewSequentialNow(time.Date(2021, 11, 17, 7, 0, 0, 0, time.UTC), time.Second))
@@ -89,7 +89,7 @@ func TestUnhealthyWebhookCalls(t *testing.T) {
 
 	// webhook service with a 2 second delay
 	svc := &failingWebhookService{delay: 2 * time.Second}
-	eng := engine.NewBuilder().WithWebhookServiceFactory(func(*http.Client, flows.SessionAssets) (flows.WebhookService, error) { return svc, nil }).Build()
+	eng := engine.NewBuilder().WithWebhookServiceFactory(func(flows.Engine, flows.SessionAssets) (flows.WebhookService, error) { return svc, nil }).Build()
 
 	runFlow := func() {
 		scene := runner.NewScene(mc, contact)

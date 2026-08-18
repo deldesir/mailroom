@@ -1,7 +1,6 @@
 package handlers_test
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/nyaruka/gocommon/httpx"
@@ -13,7 +12,7 @@ var transactionConfirmedResponse = `{
 	"creation_date": "2021-03-24T20:05:05.883561000Z",
 	"confirmation_date": "2021-03-24T20:05:06.111631000Z",
 	"credit_party_identifier": {"mobile_number": "+16055741111"},
-	"external_id": "01969b47-47eb-76f8-8e78-3bde7b3370ae",
+	"external_id": "01969b47-47eb-76f8-b3a5-b9dac4767740",
 	"id": 2237512891,
 	"status": {
 		"class": {"id": 2, "message": "CONFIRMED"},
@@ -26,12 +25,10 @@ func TestAirtimeCreated(t *testing.T) {
 	_, rt := testsuite.Runtime(t)
 	rt.Config.Domain = "mailroom.example.com"
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	// the in-sprint Create resolves the operator + product and submits the unconfirmed transaction; the
 	// post-commit hook then POSTs to /confirm with the provider id. HTTP logs surfaced inside the event are
 	// test data only and don't make real calls.
-	rt.HTTP.Services.Transport = httpx.WithMocks(http.DefaultTransport, map[string][]*httpx.MockResponse{
+	rt.HTTP.Services.Transport, _ = testsuite.MockTransport(map[string][]*httpx.MockResponse{
 		"https://dvs-api.dtone.com/v1/async/transactions/2237512891/confirm": {
 			httpx.NewMockResponse(200, nil, []byte(transactionConfirmedResponse)),
 		},

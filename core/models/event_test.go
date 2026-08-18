@@ -24,11 +24,25 @@ func TestPersistEvent(t *testing.T) {
 	assert.True(t, models.PersistEvent(events.NewContactStatusChanged(core.ContactStatusBlocked)))
 	assert.True(t, models.PersistEvent(events.NewError("URN taken by another contact", events.ErrorCodeURNTaken)))
 	assert.False(t, models.PersistEvent(events.NewError("Bang", "bang")))
-	assert.False(t, models.PersistEvent(events.NewWarning("Don't do that")))
+	assert.False(t, models.PersistEvent(events.NewWarning("Don't do that", "")))
 
 	e := events.NewError("URN taken by another contact", events.ErrorCodeURNTaken)
 	e.SetUser(nil, string(models.ViaImport))
 	assert.False(t, models.PersistEvent(e))
+}
+
+func TestPublishEvent(t *testing.T) {
+	// persisted events are also published
+	assert.True(t, models.PublishEvent(events.NewContactNameChanged("Bobby")))
+	assert.True(t, models.PublishEvent(events.NewContactStatusChanged(core.ContactStatusBlocked)))
+
+	// as are ephemeral events that update UI state
+	assert.True(t, models.PublishEvent(events.NewContactLastSeenChanged(time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC))))
+	assert.True(t, models.PublishEvent(events.NewContactFlowChanged(assets.NewFlowReference("50c3706e-fedb-42c0-8eab-dda3335714b7", "Registration"))))
+	assert.True(t, models.PublishEvent(events.NewContactFlowChanged(nil)))
+
+	// but not everything else
+	assert.False(t, models.PublishEvent(events.NewWarning("Don't do that", "")))
 }
 
 func TestEventToDynamo(t *testing.T) {

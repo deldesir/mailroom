@@ -17,8 +17,6 @@ import (
 func TestPopulateGroupTask(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetAll)
-
 	group1 := testdb.InsertContactGroup(t, rt, testdb.Org1, "e52fee05-2f95-4445-aef6-2fe7dac2fd56", "Women", "gender = F")
 	group2 := testdb.InsertContactGroup(t, rt, testdb.Org1, "8d1c25ff-d9b3-43c4-9abe-7ef3d2fc6c1a", "Invalid", "!!!", testdb.Bob)
 
@@ -45,7 +43,7 @@ func TestPopulateGroupTask(t *testing.T) {
 		GroupID: group1.ID,
 		Query:   "gender = F",
 	}
-	err = task1.Perform(ctx, rt, oa)
+	err = task1.Perform(ctx, rt, oa, testTaskID)
 	require.NoError(t, err)
 
 	// group should be evaluating after parent task completes
@@ -68,7 +66,7 @@ func TestPopulateGroupTask(t *testing.T) {
 		GroupID: group2.ID,
 		Query:   "!!!",
 	}
-	err = task2.Perform(ctx, rt, oa)
+	err = task2.Perform(ctx, rt, oa, testTaskID)
 	require.NoError(t, err)
 
 	assertdb.Query(t, rt.DB, `SELECT status FROM contacts_contactgroup WHERE id = $1`, group2.ID).Returns("X")

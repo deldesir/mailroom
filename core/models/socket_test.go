@@ -27,6 +27,79 @@ func TestHistorySocket(t *testing.T) {
 	assert.Equal(t, "history:a393abc0-283d-4c9b-a1b3-641a035c34bf:019905d4-5f7b-71b8-bcb8-6a68de2d91d2", models.HistorySocket(contact, ticket))
 }
 
+func TestFlowSocket(t *testing.T) {
+	flow := assets.FlowUUID("9de3663f-c5c5-4c92-9f45-ecbc09abcc85")
+
+	assert.Equal(t, "flow:9de3663f-c5c5-4c92-9f45-ecbc09abcc85", models.FlowSocket(flow))
+}
+
+func TestOrgSocket(t *testing.T) {
+	org := models.OrgUUID("bf0514a5-9407-44c9-b0f9-3f36f9c18414")
+
+	assert.Equal(t, "org:bf0514a5-9407-44c9-b0f9-3f36f9c18414", models.OrgSocket(org))
+}
+
+func TestPublishOrgEvent(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+	require.NoError(t, err)
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	socket := models.OrgSocket(oa.Org().UUID())
+	event := json.RawMessage(`{"type":"asset_changed","asset":{"type":"group","uuid":"c153e265-f7c9-4539-9dbc-9b358714b638","name":"Physicians"}}`)
+
+	// an event that isn't a JSON object can't be dispatched on by any client, so it's rejected rather than sent
+	assert.EqualError(t, models.PublishOrgEvent(ctx, rt, oa, nil), "org event must be a JSON object")
+	assert.EqualError(t, models.PublishOrgEvent(ctx, rt, oa, json.RawMessage(`null`)), "org event must be a JSON object")
+
+	// no subscribers so nothing is actually sent
+	require.NoError(t, models.PublishOrgEvent(ctx, rt, oa, event))
+	assert.Empty(t, testsuite.CentrifugoHistory(t, rt, socket))
+
+	_, err = vc.Do("SET", centrifugo.SubscriptionKey(socket), "1")
+	require.NoError(t, err)
+	require.NoError(t, models.PublishOrgEvent(ctx, rt, oa, event))
+
+	sent := testsuite.CentrifugoHistory(t, rt, socket)
+	require.Len(t, sent, 1)
+	assert.JSONEq(t, string(event), string(sent[0]))
+}
+
+func TestPublishFlowActivity(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	mock := rt.Centrifugo.Client.(*centrifugo.MockClient)
+
+	flow1 := assets.FlowUUID("9de3663f-c5c5-4c92-9f45-ecbc09abcc85")
+	flow2 := assets.FlowUUID("70c38f94-ab42-4666-86fd-3c76139110d3")
+
+	// no flows is a no-op
+	require.NoError(t, models.PublishFlowActivity(ctx, rt, nil))
+	assert.Empty(t, mock.Publications())
+
+	// neither flow's socket is subscribed yet, so nothing is published
+	require.NoError(t, models.PublishFlowActivity(ctx, rt, []assets.FlowUUID{flow1, flow2}))
+	assert.Empty(t, mock.Publications())
+
+	// mark flow1's socket subscribed (as the authorizing service would) - now it alone receives the typed ping
+	_, err := vc.Do("SET", centrifugo.SubscriptionKey(models.FlowSocket(flow1)), "1")
+	require.NoError(t, err)
+
+	require.NoError(t, models.PublishFlowActivity(ctx, rt, []assets.FlowUUID{flow1, flow2}))
+
+	sent := testsuite.CentrifugoHistory(t, rt, models.FlowSocket(flow1))
+	require.Len(t, sent, 1)
+	assert.JSONEq(t, `{"type": "activity"}`, string(sent[0]))
+
+	assert.Empty(t, testsuite.CentrifugoHistory(t, rt, models.FlowSocket(flow2)))
+}
+
 func TestNotificationSocket(t *testing.T) {
 	org := models.OrgUUID("bf0514a5-9407-44c9-b0f9-3f36f9c18414")
 	user := assets.UserUUID("ad9fdf9f-56ab-422a-b77d-e3ec26091a25")
@@ -36,8 +109,6 @@ func TestNotificationSocket(t *testing.T) {
 
 func TestPublishNotifications(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
 
 	vc := rt.VK.Get()
 	defer vc.Close()
@@ -97,8 +168,6 @@ func TestPublishNotifications(t *testing.T) {
 func TestPublishNotificationData(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData|testsuite.ResetValkey)
-
 	vc := rt.VK.Get()
 	defer vc.Close()
 
@@ -143,8 +212,6 @@ func TestPublishNotificationData(t *testing.T) {
 
 func TestPublishToHistory(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetValkey)
 
 	vc := rt.VK.Get()
 	defer vc.Close()

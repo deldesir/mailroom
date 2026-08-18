@@ -21,8 +21,6 @@ import (
 func TestStarts(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
-
 	startID := testdb.InsertFlowStart(t, rt, testdb.Org1, testdb.Admin, testdb.SingleMessage, []*testdb.Contact{testdb.Ann, testdb.Bob})
 
 	startJSON := fmt.Appendf(nil, `{
@@ -68,10 +66,9 @@ func TestStarts(t *testing.T) {
 	require.NoError(t, err)
 	assertdb.Query(t, rt.DB, `SELECT status, contact_count FROM flows_flowstart WHERE id = $1`, startID).Columns(map[string]any{"status": "Q", "contact_count": 5})
 
-	batch := start.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID}, true, false, 3)
+	batch := start.CreateBatch([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID}, 3)
 	assert.Equal(t, startID, batch.StartID)
 	assert.Equal(t, []models.ContactID{testdb.Ann.ID, testdb.Bob.ID}, batch.ContactIDs)
-	assert.False(t, batch.IsLast)
 	assert.Equal(t, 3, batch.TotalContacts)
 
 	history, err := models.ReadSessionHistory(start.SessionHistory)
@@ -138,6 +135,7 @@ func TestStartsBuilding(t *testing.T) {
 		},
 		"query": "language != \"\"",
 		"start_id": null,
-		"start_type": "M"
+		"start_type": "M",
+		"uuid": "72b553cc-c00b-44e6-bb48-4710e784acb8"
 	}`, testdb.Ann.ID, testdb.Bob.ID, testdb.TestersGroup.ID, testdb.Favorites.ID, testdb.DoctorsGroup.ID), marshalled)
 }

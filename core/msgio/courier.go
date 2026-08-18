@@ -16,6 +16,7 @@ import (
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
+	"github.com/nyaruka/gocommon/svclogs"
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/core"
@@ -24,7 +25,6 @@ import (
 	"github.com/nyaruka/goflow/utils"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
-	"github.com/nyaruka/mailroom/v26/utils/svclogs"
 )
 
 const (
@@ -46,11 +46,6 @@ type Contact struct {
 	UUID       core.ContactUUID `json:"uuid"`
 	LastSeenOn *time.Time       `json:"last_seen_on,omitempty"`
 	OtherURNs  []urns.URN       `json:"other_urns,omitempty"` // currently needed for WA handlers to know if contact already has a BSUID URN, may not be needed long term
-}
-
-type OptInRef struct {
-	ID   models.OptInID `json:"id"`
-	Name string         `json:"name"`
 }
 
 type FlowRef struct {
@@ -93,7 +88,6 @@ type Msg struct {
 	URNAuth              string             `json:"urn_auth,omitempty"`
 	Flow                 *FlowRef           `json:"flow,omitempty"`
 	UserID               models.UserID      `json:"user_id,omitempty"`
-	OptIn                *OptInRef          `json:"optin,omitempty"`
 	ResponseToExternalID string             `json:"response_to_external_id,omitempty"`
 	IsResend             bool               `json:"is_resend,omitempty"`
 	PrevAttempts         int                `json:"prev_attempts,omitempty"`
@@ -149,17 +143,6 @@ func NewCourierMsg(oa *models.OrgAssets, mo *models.MsgOut, ch *models.Channel) 
 		msg.Origin = MsgOriginTicket
 	} else {
 		msg.Origin = MsgOriginChat
-	}
-
-	if mo.Type() == models.MsgTypeOptIn {
-		// this is an optin request
-		optIn := oa.OptInByID(mo.OptInID())
-		if optIn != nil {
-			msg.OptIn = &OptInRef{ID: optIn.ID(), Name: optIn.Name()}
-		}
-	} else if mo.OptInID() != models.NilOptInID {
-		// an optin on a broadcast message means use it for authentication
-		msg.URNAuth = mo.URN.AuthTokens[fmt.Sprintf("optin:%d", mo.OptInID())]
 	}
 
 	if mo.Templating() != nil {

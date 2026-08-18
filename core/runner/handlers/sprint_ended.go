@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -32,7 +33,6 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 	slog.Debug("sprint ended", "contact", scene.ContactUUID(), "session", scene.SessionUUID())
 
 	if !event.Resumed {
-		session := models.NewSession(oa, scene.Session, scene.Sprint, scene.DBCall)
 		runs := make([]*models.FlowRun, len(scene.Session.Runs()))
 
 		for i, r := range scene.Session.Runs() {
@@ -43,6 +43,12 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 				runs[i].StartID = scene.StartID
 			}
 		}
+
+		// compact the session (clears state of exited runs) - must happen after runs are created above so they get
+		// their complete paths, and before the session output is marshaled below
+		scene.Session.Compact()
+
+		session := models.NewSession(oa, scene.Session, scene.Sprint, scene.DBCall)
 
 		scene.AttachPreCommitHook(hooks.InsertSessions, session)
 		scene.AttachPreCommitHook(hooks.InsertRuns, runs)
@@ -60,6 +66,10 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 			}
 		}
 
+		// compact the session (clears state of exited runs) - must happen after runs are created above so they get
+		// their complete paths, and before the session output is marshaled by the update sessions hook
+		scene.Session.Compact()
+
 		scene.AttachPreCommitHook(hooks.UpdateSessions, scene.DBSession)
 		scene.AttachPreCommitHook(hooks.InsertRuns, insertRuns)
 		scene.AttachPreCommitHook(hooks.UpdateRuns, updateRuns)
@@ -69,10 +79,10 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 	currentFlowChanged := false
 
 	// get flow that contact is now waiting in
-	waitingFlowID := models.NilFlowID
+	var waitingFlow *models.Flow
 	for _, run := range scene.Session.Runs() {
 		if run.Status() == core.RunStatusWaiting {
-			waitingFlowID = run.Flow().Asset().(*models.Flow).ID()
+			waitingFlow = run.Flow().Asset().(*models.Flow)
 			break
 		}
 	}
@@ -84,14 +94,17 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 			waitingSessionUUID = scene.Session.UUID()
 		}
 
-		currentFlowChanged = event.Contact.CurrentFlowID() != waitingFlowID
-		scene.DBContact.SetCurrentFlowID(waitingFlowID)
+		changed, err := scene.SetCurrentFlow(ctx, rt, oa, waitingFlow)
+		if err != nil {
+			return fmt.Errorf("error setting contact current flow: %w", err)
+		}
+		currentFlowChanged = changed
 
 		if event.Contact.CurrentSessionUUID() != waitingSessionUUID || currentFlowChanged {
 			scene.AttachPreCommitHook(hooks.UpdateContactSession, hooks.CurrentSessionUpdate{
 				ID:                 scene.ContactID(),
 				CurrentSessionUUID: null.String(waitingSessionUUID),
-				CurrentFlowID:      waitingFlowID,
+				CurrentFlowID:      scene.DBContact.CurrentFlowID(),
 			})
 		}
 	}
@@ -136,6 +149,7 @@ func handleSprintEnded(ctx context.Context, rt *runtime.Runtime, oa *models.OrgA
 
 		scene.AttachPreCommitHook(hooks.InsertContactFires, hooks.FiresSet{Create: newFires, Delete: delFires})
 		scene.AttachPreCommitHook(hooks.InsertFlowStats, event)
+		scene.AttachPostCommitHook(hooks.PublishFlowActivity, event)
 	}
 	return nil
 }

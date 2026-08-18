@@ -67,7 +67,6 @@
                 "tel:+1234567890"
             ],
             "query": "age > 20",
-            "optin_id": 30000,
             "template_id": 10000,
             "template_variables": [
                 "@contact"
@@ -79,7 +78,7 @@
         },
         "db_assertions": [
             {
-                "query": "SELECT count(*) FROM msgs_broadcast WHERE status = 'P' AND translations-\u003e'eng'-\u003e\u003e'text' = 'Hello' AND base_language = 'eng' AND urns = '{\"tel:+1234567890\"}' AND query = 'age \u003e 20' AND optin_id = 30000 AND template_id = 10000 AND template_variables = '{\"@contact\"}'",
+                "query": "SELECT count(*) FROM msgs_broadcast WHERE status = 'P' AND translations-\u003e'eng'-\u003e\u003e'text' = 'Hello' AND base_language = 'eng' AND urns = '{\"tel:+1234567890\"}' AND query = 'age \u003e 20' AND template_id = 10000 AND template_variables = '{\"@contact\"}'",
                 "returns": 1
             },
             {
@@ -97,7 +96,7 @@
                     "type": "send_broadcast",
                     "payload": {
                         "broadcast_id": 30000,
-                        "broadcast_uuid": "01969b47-0583-76f8-ae7f-f8b243c49ff5",
+                        "broadcast_uuid": "01969b47-0583-76f8-924e-9de1a11831b3",
                         "org_id": 1,
                         "status": "P",
                         "translations": {
@@ -107,7 +106,6 @@
                         },
                         "base_language": "eng",
                         "expressions": true,
-                        "optin_id": 30000,
                         "template_id": 10000,
                         "template_variables": [
                             "@contact"
@@ -166,7 +164,7 @@
                     "type": "send_broadcast",
                     "payload": {
                         "broadcast_id": 30001,
-                        "broadcast_uuid": "01969b47-0d53-76f8-bd38-d266ec8d3716",
+                        "broadcast_uuid": "01969b47-0d53-76f8-98c7-1f0d5859f77e",
                         "org_id": 1,
                         "status": "P",
                         "translations": {

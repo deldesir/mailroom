@@ -29,7 +29,6 @@ type EventReceived struct {
 	EventType  models.ChannelEventType `json:"event_type"`
 	ChannelID  models.ChannelID        `json:"channel_id"`
 	URNID      models.URNID            `json:"urn_id"`
-	OptInID    models.OptInID          `json:"optin_id"`
 	Extra      null.Map[any]           `json:"extra"`
 	NewContact bool                    `json:"new_contact"`
 }
@@ -69,23 +68,15 @@ func (t *EventReceived) handle(ctx context.Context, rt *runtime.Runtime, oa *mod
 		return nil, nil
 	}
 
-	// build our flow contact
+	// build our engine contact
 	contact, err := mc.EngineContact(oa)
 	if err != nil {
-		return nil, fmt.Errorf("error creating flow contact: %w", err)
+		return nil, fmt.Errorf("error creating engine contact: %w", err)
 	}
 
-	var flowOptIn *flows.OptIn
-	if t.EventType == models.EventTypeOptIn || t.EventType == models.EventTypeOptOut {
-		optIn := oa.OptInByID(t.OptInID)
-		if optIn != nil {
-			flowOptIn = oa.SessionAssets().OptIns().Get(optIn.UUID())
-		}
-	}
-
-	var flowCall *flows.Call
+	var flowCall *core.Call
 	if call != nil {
-		flowCall = flows.NewCall(call.UUID(), oa.SessionAssets().Channels().Get(channel.UUID()), urn.Identity)
+		flowCall = core.NewCall(call.UUID(), oa.SessionAssets().Channels().Get(channel.UUID()), urn.Identity)
 	}
 
 	scene := runner.NewScene(mc, contact)
@@ -112,13 +103,13 @@ func (t *EventReceived) handle(ctx context.Context, rt *runtime.Runtime, oa *mod
 	}
 
 	// convert to real event
-	event := t.toEvent(channel, flowCall, flowOptIn)
+	event := t.toEvent(channel, flowCall)
 	if event != nil {
 		if err := scene.AddEvent(ctx, rt, oa, event, models.NilUserID, ""); err != nil {
 			return nil, fmt.Errorf("error adding channel event to scene: %w", err)
 		}
 
-		trig, flowType, err := findEventTrigger(oa, event, channel, contact, flowOptIn)
+		trig, flowType, err := findEventTrigger(oa, event, channel, contact)
 		if err != nil {
 			return nil, err
 		}
@@ -130,6 +121,13 @@ func (t *EventReceived) handle(ctx context.Context, rt *runtime.Runtime, oa *mod
 					return nil, fmt.Errorf("error requesting call: %w", err)
 				}
 			} else {
+				// an incoming call can trigger a non-voice flow, in which case the call will be
+				// rejected and shouldn't be attached to the session
+				if flowType != models.FlowTypeVoice {
+					scene.DBCall = nil
+					scene.Call = nil
+				}
+
 				if err := scene.StartSession(ctx, rt, oa, trig, flowType.Interrupts()); err != nil {
 					return nil, fmt.Errorf("error starting session: %w", err)
 				}
@@ -156,7 +154,7 @@ func (t *EventReceived) handle(ctx context.Context, rt *runtime.Runtime, oa *mod
 }
 
 // convert to a real engine event
-func (t *EventReceived) toEvent(ch *models.Channel, call *flows.Call, optIn *flows.OptIn) events.Event {
+func (t *EventReceived) toEvent(ch *models.Channel, call *core.Call) events.Event {
 	switch t.EventType {
 	case models.EventTypeMissedCall:
 		return events.NewCallMissed(ch.Reference())
@@ -175,19 +173,11 @@ func (t *EventReceived) toEvent(ch *models.Channel, call *flows.Call, optIn *flo
 			}
 		}
 		return events.NewChatStarted(ch.Reference(), params)
-	case models.EventTypeOptIn:
-		if optIn != nil {
-			return events.NewOptInStarted(optIn.Reference(), ch.Reference())
-		}
-	case models.EventTypeOptOut:
-		if optIn != nil {
-			return events.NewOptInStopped(optIn.Reference(), ch.Reference())
-		}
 	}
 	return nil
 }
 
-func findEventTrigger(oa *models.OrgAssets, evt events.Event, ch *models.Channel, c *flows.Contact, optIn *flows.OptIn) (flows.Trigger, models.FlowType, error) {
+func findEventTrigger(oa *models.OrgAssets, evt events.Event, ch *models.Channel, c *core.Contact) (flows.Trigger, models.FlowType, error) {
 	var mtrig *models.Trigger
 
 	switch typed := evt.(type) {
@@ -201,10 +191,6 @@ func findEventTrigger(oa *models.OrgAssets, evt events.Event, ch *models.Channel
 		} else {
 			mtrig = models.FindMatchingNewConversationTrigger(oa, ch)
 		}
-	case *events.OptInStarted:
-		mtrig = models.FindMatchingOptInTrigger(oa, ch)
-	case *events.OptInStopped:
-		mtrig = models.FindMatchingOptOutTrigger(oa, ch)
 	default:
 		panic(fmt.Sprintf("unknown event type: %T", evt))
 	}
@@ -235,10 +221,6 @@ func findEventTrigger(oa *models.OrgAssets, evt events.Event, ch *models.Channel
 		trig = tb.CallReceived(typed).Build()
 	case *events.ChatStarted:
 		trig = tb.ChatStarted(typed).Build()
-	case *events.OptInStarted:
-		trig = tb.OptInStarted(typed, optIn).Build()
-	case *events.OptInStopped:
-		trig = tb.OptInStopped(typed, optIn).Build()
 	default:
 		panic(fmt.Sprintf("unknown event type: %T", evt))
 	}

@@ -12,7 +12,6 @@ import (
 	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/goflow/core/events"
-	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/search"
 	"github.com/nyaruka/mailroom/v26/runtime"
@@ -21,11 +20,12 @@ import (
 
 const indexBatchSize = 500
 
-// Index is the entry point for the mrindex command which re-indexes all contacts or messages.
-func Index() error {
-	cfg, err := runtime.LoadConfig()
+// Index is the entry point for the mrindex command which re-indexes all contacts or messages. Configuration is
+// loaded on top of the given defaults, e.g. runtime.NewDefaultConfig().
+func Index(defaults *runtime.Config) error {
+	cfg, err := runtime.LoadConfig(defaults)
 	if err != nil {
-		return fmt.Errorf("error loading config: %w", err)
+		return err
 	}
 
 	// only output ERROR logs
@@ -40,6 +40,8 @@ func Index() error {
 		return fmt.Errorf("error starting runtime: %w", err)
 	}
 	defer rt.Stop()
+
+	models.InitCache(rt)
 
 	// parse mode from args
 	flags := flag.NewFlagSet("mrindex", flag.ExitOnError)
@@ -95,29 +97,29 @@ func indexAllContacts(ctx context.Context, rt *runtime.Runtime) error {
 				return fmt.Errorf("error loading org assets for org #%d: %w", orgID, err)
 			}
 
-			contacts, err := models.LoadContacts(ctx, rt.DB, oa, contactIDs)
+			mcs, err := models.LoadContacts(ctx, rt.DB, oa, contactIDs)
 			if err != nil {
 				return fmt.Errorf("error loading contacts for org #%d: %w", orgID, err)
 			}
 
-			flowContacts := make([]*flows.Contact, 0, len(contacts))
-			currentFlows := make(map[models.ContactID]models.FlowID, len(contacts))
-			for _, c := range contacts {
-				fc, err := c.EngineContact(oa)
+			contacts := make([]*core.Contact, 0, len(mcs))
+			currentFlows := make(map[models.ContactID]models.FlowID, len(mcs))
+			for _, mc := range mcs {
+				contact, err := mc.EngineContact(oa)
 				if err != nil {
 					orgSkipped++
 					continue
 				}
-				flowContacts = append(flowContacts, fc)
-				currentFlows[c.ID()] = c.CurrentFlowID()
+				contacts = append(contacts, contact)
+				currentFlows[mc.ID()] = mc.CurrentFlowID()
 			}
 
-			if err := search.IndexContacts(ctx, rt, oa, flowContacts, currentFlows); err != nil {
+			if err := search.IndexContacts(ctx, rt, oa, contacts, currentFlows); err != nil {
 				return fmt.Errorf("error indexing contacts for org #%d: %w", orgID, err)
 			}
 
-			orgIndexed += len(flowContacts)
-			totalIndexed += len(flowContacts)
+			orgIndexed += len(contacts)
+			totalIndexed += len(contacts)
 			orgBatches++
 			afterID = contactIDs[len(contactIDs)-1]
 

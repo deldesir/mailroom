@@ -42,7 +42,7 @@ func (t *StartFlow) WithAssets() models.Refresh {
 	return models.RefreshNone
 }
 
-func (t *StartFlow) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets) error {
+func (t *StartFlow) Perform(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, taskID TaskID) error {
 	if err := createFlowStartBatches(ctx, rt, oa, t.FlowStart); err != nil {
 		t.FlowStart.SetFailed(ctx, rt.DB)
 
@@ -67,11 +67,11 @@ func createFlowStartBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 
 	if start.CreateContact {
 		// if we are meant to create a new contact, do so
-		contact, _, err := models.CreateContact(ctx, rt.DB, oa, models.NilUserID, "", i18n.NilLanguage, models.ContactStatusActive, nil)
+		mc, _, err := models.CreateContact(ctx, rt.DB, oa, models.NilUserID, "", i18n.NilLanguage, models.ContactStatusActive, nil)
 		if err != nil {
 			return fmt.Errorf("error creating new contact: %w", err)
 		}
-		contactIDs = []models.ContactID{contact.ID()}
+		contactIDs = []models.ContactID{mc.ID()}
 	} else {
 		// otherwise resolve recipients across contacts, groups, urns etc
 
@@ -117,9 +117,10 @@ func createFlowStartBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 	idBatches := slices.Collect(slices.Chunk(contactIDs, FlowStartBatchSize))
 
 	for i, idBatch := range idBatches {
-		isFirst := (i == 0)
-		isLast := (i == len(idBatches)-1)
-		batchTask := &StartFlowBatch{FlowStartBatch: start.CreateBatch(idBatch, isFirst, isLast, len(contactIDs))}
+		batchTask := &StartFlowBatch{
+			BatchTask:      BatchTask{BatchOwnerUUID: start.UUID, TotalBatches: len(idBatches)},
+			FlowStartBatch: start.CreateBatch(idBatch, len(contactIDs)),
+		}
 
 		if err := Queue(ctx, rt, q, start.OrgID, batchTask, false); err != nil {
 			if i == 0 {

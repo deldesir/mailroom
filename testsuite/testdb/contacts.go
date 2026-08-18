@@ -8,9 +8,9 @@ import (
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/gocommon/urns"
+	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/core"
-	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
 	"github.com/nyaruka/null/v3"
@@ -28,13 +28,13 @@ func (c *Contact) Reference() *core.ContactReference {
 	return &core.ContactReference{UUID: c.UUID, Name: ""}
 }
 
-func (c *Contact) Load(t *testing.T, rt *runtime.Runtime, oa *models.OrgAssets) (*models.Contact, *flows.Contact, []*models.ContactURN) {
+func (c *Contact) Load(t *testing.T, rt *runtime.Runtime, oa *models.OrgAssets) (*models.Contact, *core.Contact, []*models.ContactURN) {
 	ctx := context.Background()
 
-	contact, err := models.LoadContact(ctx, rt.DB, oa, c.ID)
+	mc, err := models.LoadContact(ctx, rt.DB, oa, c.ID)
 	require.NoError(t, err)
 
-	flowContact, err := contact.EngineContact(oa)
+	contact, err := mc.EngineContact(oa)
 	require.NoError(t, err)
 
 	var urnIDs []models.URNID
@@ -44,7 +44,7 @@ func (c *Contact) Load(t *testing.T, rt *runtime.Runtime, oa *models.OrgAssets) 
 	cus, err := models.LoadContactURNs(ctx, rt.DB, urnIDs)
 	require.NoError(t, err)
 
-	return contact, flowContact, cus
+	return mc, contact, cus
 }
 
 type Group struct {
@@ -76,6 +76,10 @@ func InsertContact(t *testing.T, rt *runtime.Runtime, org *Org, uuid core.Contac
 
 // InsertContactGroup inserts a contact group
 func InsertContactGroup(t *testing.T, rt *runtime.Runtime, org *Org, uuid assets.GroupUUID, name, query string, contacts ...*Contact) *Group {
+	if uuid == "" {
+		uuid = assets.GroupUUID(uuids.NewV4())
+	}
+
 	status := models.GroupStatusReady
 	groupType := models.GroupTypeManual
 	if query != "" {

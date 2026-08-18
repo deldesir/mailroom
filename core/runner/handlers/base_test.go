@@ -106,7 +106,7 @@ func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
 	assert.NoError(t, err)
 
-	test.MockUniverse()
+	defer test.MockUniverse()()
 
 	for i, tc := range tcs {
 		scenes := make([]*runner.Scene, 4)
@@ -236,7 +236,7 @@ func runTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 			tcs[i] = actual
 		}
 
-		testsuite.Reset(t, rt, testsuite.ResetElastic)
+		testsuite.ClearElastic(t, rt)
 	}
 
 	// update if we are meant to
@@ -280,10 +280,10 @@ func createTestFlow(t *testing.T, uuid assets.FlowUUID, actions ContactActionMap
 	exitNodes := make([]flows.Node, len(actions))
 	i = 0
 	for contactUUID, actions := range actions {
-		cases[i] = routers.NewCase(uuids.NewV4(), "has_any_word", []string{string(contactUUID)}, categoryUUIDs[i])
+		cases[i] = routers.NewCase(flows.CaseUUID(uuids.NewV4()), "has_any_word", []string{string(contactUUID)}, categoryUUIDs[i])
 
 		exitNodes[i] = definition.NewNode(
-			flows.NewNodeUUID(),
+			core.NewNodeUUID(),
 			actions,
 			nil,
 			[]flows.Exit{definition.NewExit(flows.ExitUUID(uuids.NewV4()), "")},
@@ -301,7 +301,7 @@ func createTestFlow(t *testing.T, uuid assets.FlowUUID, actions ContactActionMap
 	router := routers.NewSwitch(nil, "", categories, "@contact.uuid", cases, defaultCategoryUUID)
 
 	// and our entry node
-	entry := definition.NewNode(flows.NewNodeUUID(), nil, router, exits)
+	entry := definition.NewNode(core.NewNodeUUID(), nil, router, exits)
 
 	nodes := []flows.Node{entry}
 	nodes = append(nodes, exitNodes...)

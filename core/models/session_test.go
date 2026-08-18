@@ -1,11 +1,13 @@
 package models_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
+	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/gocommon/random"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/core"
@@ -27,7 +29,6 @@ func TestInsertSessions(t *testing.T) {
 
 	defer dates.SetNowFunc(time.Now)
 	defer random.SetGenerator(random.DefaultGenerator)
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/session_test_flows.json")
 	flow := testFlows[0]
@@ -38,7 +39,7 @@ func TestInsertSessions(t *testing.T) {
 	mc, _, _ := testdb.Bob.Load(t, rt, oa)
 
 	sa, flowSession, sprint1 := test.NewSessionBuilder().WithAssets(oa.SessionAssets()).WithFlow(flow.UUID).
-		WithContact(testdb.Bob.UUID, flows.ContactID(testdb.Bob.ID), "Bob", "eng", "").MustBuild()
+		WithContact(testdb.Bob.UUID, core.ContactID(testdb.Bob.ID), "Bob", "eng", "").MustBuild()
 
 	tx := rt.DB.MustBegin()
 
@@ -101,10 +102,43 @@ func TestInsertSessions(t *testing.T) {
 		Columns(map[string]any{"status": "C", "session_type": "M", "current_flow_uuid": nil})
 }
 
-func TestGetContactWaitingSession(t *testing.T) {
+func TestEngineSession(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
+	testFlows := testdb.ImportFlows(t, rt, testdb.Org1, "testdata/session_test_flows.json")
+	flow := testFlows[0]
+
+	oa, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshFlows)
+	require.NoError(t, err)
+
+	_, flowSession, sprint := test.NewSessionBuilder().WithAssets(oa.SessionAssets()).WithFlow(flow.UUID).
+		WithContact(testdb.Bob.UUID, core.ContactID(testdb.Bob.ID), "Bob", "eng", "").MustBuild()
+
+	session := models.NewSession(oa, flowSession, sprint, nil)
+
+	// simulate a legacy messaging session created with a call attached to it
+	var envelope map[string]json.RawMessage
+	jsonx.MustUnmarshal(session.Output, &envelope)
+	envelope["call_uuid"] = json.RawMessage(`"0199ba54-f47c-77a1-a3b0-a83bd7f6c6a5"`)
+	session.Output = jsonx.MustMarshal(envelope)
+	session.CallUUID = "0199ba54-f47c-77a1-a3b0-a83bd7f6c6a5"
+
+	// should still be readable without a call because the stored call is ignored for non-voice sessions
+	readSession, err := session.EngineSession(ctx, rt, oa.SessionAssets(), oa.Env(), flowSession.Contact(), nil)
+	require.NoError(t, err)
+	assert.Nil(t, readSession.Call())
+
+	// and re-serializing it (as a subsequent update would) no longer includes the call
+	assert.NotContains(t, string(jsonx.MustMarshal(readSession)), `"call_uuid"`)
+
+	// but a voice session read without a matching call is still an error
+	session.SessionType = models.FlowTypeVoice
+	_, err = session.EngineSession(ctx, rt, oa.SessionAssets(), oa.Env(), flowSession.Contact(), nil)
+	assert.ErrorContains(t, err, "session call doesn't match provided")
+}
+
+func TestGetContactWaitingSession(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
 
 	sessionUUID := testdb.InsertWaitingSession(t, rt, testdb.Org1, testdb.Ann, models.FlowTypeMessaging, nil, testdb.Favorites)
 	testdb.InsertFlowSession(t, rt, testdb.Ann, models.FlowTypeMessaging, models.SessionStatusCompleted, nil, testdb.Favorites)
@@ -121,8 +155,6 @@ func TestGetContactWaitingSession(t *testing.T) {
 
 func TestInterruptContacts(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
-
-	defer testsuite.Reset(t, rt, testsuite.ResetData)
 
 	oa := testdb.Org1.Load(t, rt)
 

@@ -15,17 +15,16 @@ func init() {
 	runner.RegisterEventHandler(events.TypeCallMissed, noopHandler)
 	runner.RegisterEventHandler(events.TypeCallReceived, noopHandler)
 	runner.RegisterEventHandler(events.TypeChatStarted, noopHandler)
+	runner.RegisterEventHandler(events.TypeContactFlowChanged, noopHandler) // db update happens via sprint ended or interruption
 	runner.RegisterEventHandler(events.TypeDialEnded, noopHandler)
 	runner.RegisterEventHandler(events.TypeDialWait, noopHandler)
-	runner.RegisterEventHandler(events.TypeError, noopHandler)
 	runner.RegisterEventHandler(events.TypeFailure, noopHandler)
 	runner.RegisterEventHandler(events.TypeMsgWait, noopHandler)
-	runner.RegisterEventHandler(events.TypeOptInStarted, noopHandler)
-	runner.RegisterEventHandler(events.TypeOptInStopped, noopHandler)
 	runner.RegisterEventHandler(events.TypeRunEnded, noopHandler)
 	runner.RegisterEventHandler(events.TypeRunResultChanged, noopHandler)
 	runner.RegisterEventHandler(events.TypeWaitExpired, noopHandler)
 	runner.RegisterEventHandler(events.TypeWaitTimedOut, noopHandler)
+	runner.RegisterEventHandler(events.TypeWarning, noopHandler)
 }
 
 // our hook for events we ignore in a run
