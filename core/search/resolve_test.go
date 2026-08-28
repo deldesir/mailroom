@@ -1,8 +1,11 @@
 package search_test
 
 import (
+	"bytes"
 	"testing"
 
+	"github.com/nyaruka/gocommon/elastic"
+	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/search"
@@ -22,10 +25,11 @@ func TestResolveRecipients(t *testing.T) {
 	require.NoError(t, err)
 
 	tcs := []struct {
-		flow        *testdb.Flow
-		recipients  *search.Recipients
-		limit       int
-		expectedIDs []models.ContactID
+		flow               *testdb.Flow
+		recipients         *search.Recipients
+		limit              int
+		expectedIDs        []models.ContactID
+		expectedCreatedIDs []models.ContactID
 	}{
 		{ // 0 nobody
 			recipients:  &search.Recipients{},
@@ -65,15 +69,16 @@ func TestResolveRecipients(t *testing.T) {
 		{ // 5 create new contacts from URNs
 			recipients: &search.Recipients{
 				ContactIDs: []models.ContactID{testdb.Bob.ID},
-				URNs:       []urns.URN{"tel:+1234000001", "tel:+1234000002"},
+				URNs:       []urns.URN{"tel:+12345550101", "tel:+12345550102"},
 				Exclusions: models.Exclusions{InAFlow: true},
 			},
-			limit:       -1,
-			expectedIDs: []models.ContactID{testdb.Bob.ID, 30000, 30001},
+			limit:              -1,
+			expectedIDs:        []models.ContactID{testdb.Bob.ID, 30000, 30001},
+			expectedCreatedIDs: []models.ContactID{30000, 30001},
 		},
 		{ // 6 new contacts not included if excluding based on last seen
 			recipients: &search.Recipients{
-				URNs:       []urns.URN{"tel:+1234000003"},
+				URNs:       []urns.URN{"tel:+12345550103"},
 				Exclusions: models.Exclusions{NotSeenSinceDays: 10},
 			},
 			limit:       -1,
@@ -81,7 +86,7 @@ func TestResolveRecipients(t *testing.T) {
 		},
 		{ // 7 new contacts is now an existing contact that can be searched
 			recipients: &search.Recipients{
-				URNs: []urns.URN{"tel:+1234000003"},
+				URNs: []urns.URN{"tel:+12345550103"},
 			},
 			limit:       -1,
 			expectedIDs: []models.ContactID{30002},
@@ -96,8 +101,35 @@ func TestResolveRecipients(t *testing.T) {
 			flow = tc.flow.Load(t, rt, oa)
 		}
 
-		actualIDs, err := search.ResolveRecipients(ctx, rt, oa, testdb.Admin.ID, flow, tc.recipients, tc.limit)
+		actualIDs, actualCreatedIDs, err := search.ResolveRecipients(ctx, rt, oa, testdb.Admin.ID, flow, tc.recipients, tc.limit)
 		assert.NoError(t, err)
 		assert.ElementsMatch(t, tc.expectedIDs, actualIDs, "contact ids mismatch in %d", i)
+		assert.ElementsMatch(t, tc.expectedCreatedIDs, actualCreatedIDs, "created contact ids mismatch in %d", i)
 	}
+}
+
+func TestResolveRecipientsIndexesExcludedCreatedContacts(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+	require.NoError(t, err)
+
+	// resolve a raw URN with a last seen exclusion which the created contact can't satisfy
+	matches, createdIDs, err := search.ResolveRecipients(ctx, rt, oa, testdb.Admin.ID, nil, &search.Recipients{
+		URNs:       []urns.URN{"tel:+12345550199"},
+		Exclusions: models.Exclusions{NotSeenSinceDays: 10},
+	}, -1)
+	require.NoError(t, err)
+	assert.Empty(t, matches)
+	assert.Empty(t, createdIDs)
+
+	// contact is created but excluded, so it should have been indexed directly
+	rt.ES.Writer.Flush()
+	_, err = rt.ES.Client.Indices.Refresh().Index(rt.Config.ElasticContactsIndex).Do(ctx)
+	require.NoError(t, err)
+
+	src := map[string]any{"query": elastic.Nested("urns", elastic.Term("urns.path.keyword", "+12345550199"))}
+	resp, err := rt.ES.Client.Count().Index(rt.Config.ElasticContactsIndex).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), resp.Count, "expected excluded created contact to be indexed")
 }

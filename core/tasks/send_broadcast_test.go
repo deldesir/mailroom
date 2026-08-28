@@ -1,11 +1,14 @@
 package tasks_test
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
+	"github.com/nyaruka/gocommon/elastic"
 	"github.com/nyaruka/gocommon/i18n"
+	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/assets"
 	"github.com/nyaruka/goflow/core"
@@ -33,7 +36,7 @@ func TestBroadcastsFromEvents(t *testing.T) {
 	ann := core.NewContactReference(testdb.Ann.UUID, "Ann")
 
 	// add an extra URN fo Ann
-	testdb.InsertContactURN(t, rt, testdb.Org1, testdb.Ann, urns.URN("tel:+12065551212"), 1001, nil)
+	testdb.InsertContactURN(t, rt, testdb.Org1, testdb.Ann, urns.URN("tel:+12065550100"), 1001, nil)
 
 	// change Cat's URN to an invalid twitter URN so it can't be sent
 	rt.DB.MustExec(`UPDATE contacts_contacturn SET identity = 'twitter:invalid-urn', scheme = 'twitter', path='invalid-urn' WHERE id = $1`, testdb.Cat.URNID)
@@ -111,7 +114,7 @@ func TestBroadcastsFromEvents(t *testing.T) {
 			baseLanguage:       eng,
 			groups:             nil,
 			contacts:           []*core.ContactReference{ann},
-			urns:               []urns.URN{urns.URN("tel:+12065551212")},
+			urns:               []urns.URN{urns.URN("tel:+12065550100")},
 			queue:              rt.Queues.Realtime,
 			expectedBatchCount: 1,
 			expectedMsgCount:   1,
@@ -169,6 +172,48 @@ func TestBroadcastsFromEvents(t *testing.T) {
 	}
 }
 
+func TestSendBroadcastToURNsIndexesCreatedContacts(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+	require.NoError(t, err)
+
+	// send a broadcast to a URN that doesn't belong to an existing contact
+	bcast := models.NewBroadcast(
+		oa.OrgID(),
+		core.BroadcastTranslations{"eng": {Text: "hello"}},
+		"eng",
+		false,
+		nil,
+		nil,
+		[]urns.URN{"tel:+16055550133"},
+		"",
+		models.NoExclusions,
+		testdb.Admin.ID,
+	)
+	err = models.InsertBroadcast(ctx, rt.DB, bcast)
+	require.NoError(t, err)
+
+	err = tasks.Queue(ctx, rt, rt.Queues.Batch, testdb.Org1.ID, &tasks.SendBroadcast{Broadcast: bcast}, false)
+	require.NoError(t, err)
+
+	testsuite.FlushTasks(t, rt)
+
+	// a contact should have been created for the URN and sent the broadcast message
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM contacts_contacturn WHERE identity = 'tel:+16055550133'`).Returns(1)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE org_id = 1 AND text = 'hello'`).Returns(1)
+
+	// and the created contact should have been indexed
+	rt.ES.Writer.Flush()
+	_, err = rt.ES.Client.Indices.Refresh().Index(rt.Config.ElasticContactsIndex).Do(ctx)
+	require.NoError(t, err)
+
+	src := map[string]any{"query": elastic.Nested("urns", elastic.Term("urns.path.keyword", "+16055550133"))}
+	resp, err := rt.ES.Client.Count().Index(rt.Config.ElasticContactsIndex).Raw(bytes.NewReader(jsonx.MustMarshal(src))).Do(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), resp.Count, "expected created contact to be indexed")
+}
+
 func TestSendBroadcastTask(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 	vc := rt.VK.Get()
@@ -180,7 +225,7 @@ func TestSendBroadcastTask(t *testing.T) {
 	assert.NoError(t, err)
 
 	// add an extra URN for Ann, change Cat's language to Spanish, and mark Bob as seen recently
-	testdb.InsertContactURN(t, rt, testdb.Org1, testdb.Ann, urns.URN("tel:+12065551212"), 1001, nil)
+	testdb.InsertContactURN(t, rt, testdb.Org1, testdb.Ann, urns.URN("tel:+12065550100"), 1001, nil)
 	rt.DB.MustExec(`UPDATE contacts_contact SET language = 'spa', modified_on = NOW() WHERE id = $1`, testdb.Cat.ID)
 	rt.DB.MustExec(`UPDATE contacts_contact SET last_seen_on = NOW() - interval '45 days', modified_on = NOW() WHERE id = $1`, testdb.Bob.ID)
 
@@ -225,7 +270,7 @@ func TestSendBroadcastTask(t *testing.T) {
 			createdByID:     testdb.Agent.ID,
 			queue:           rt.Queues.Realtime,
 			expectedBatches: 1,
-			expectedMsgs:    map[string]int{"hi Ann from TextIt goflow URN: tel:+12065551212 Gender: F": 1},
+			expectedMsgs:    map[string]int{"hi Ann from TextIt goflow URN: tel:+12065550100 Gender: F": 1},
 		},
 		{
 			translations: core.BroadcastTranslations{

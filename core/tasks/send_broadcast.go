@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/uuids"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/mailroom/v26/core/models"
@@ -48,7 +49,7 @@ func (t *SendBroadcast) Perform(ctx context.Context, rt *runtime.Runtime, oa *mo
 	if err := createBroadcastBatches(ctx, rt, oa, t.Broadcast); err != nil {
 		t.Broadcast.SetFailed(ctx, rt.DB)
 
-		// if error is user created query error.. don't escalate error to sentry
+		// if error is user created query error.. don't treat it as a task error
 		isQueryError, _ := contactql.IsQueryError(err)
 		if !isQueryError {
 			return err
@@ -59,7 +60,7 @@ func (t *SendBroadcast) Perform(ctx context.Context, rt *runtime.Runtime, oa *mo
 }
 
 func createBroadcastBatches(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, bcast *models.Broadcast) error {
-	contactIDs, err := search.ResolveRecipients(ctx, rt, oa, bcast.CreatedByID, nil, &search.Recipients{
+	contactIDs, createdContactIDs, err := search.ResolveRecipients(ctx, rt, oa, bcast.CreatedByID, nil, &search.Recipients{
 		ContactIDs:      bcast.ContactIDs,
 		GroupIDs:        bcast.GroupIDs,
 		URNs:            bcast.URNs,
@@ -105,10 +106,30 @@ func createBroadcastBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 		q = rt.Queues.Realtime
 	}
 
+	createdIDs := make(map[models.ContactID]bool, len(createdContactIDs))
+	for _, id := range createdContactIDs {
+		createdIDs[id] = true
+	}
+
 	// create tasks for batches of contacts
 	idBatches := slices.Collect(slices.Chunk(contactIDs, broadcastBatchSize))
+
+	RecordQueued(ctx, rt, uuids.UUID(bcast.UUID), &BatchInfo{
+		Type:     TypeSendBroadcastBatch,
+		OrgID:    bcast.OrgID,
+		Total:    len(idBatches),
+		QueuedOn: dates.Now(),
+	})
+
 	for i, idBatch := range idBatches {
-		batch := bcast.CreateBatch(idBatch)
+		var createdBatch []models.ContactID
+		for _, id := range idBatch {
+			if createdIDs[id] {
+				createdBatch = append(createdBatch, id)
+			}
+		}
+
+		batch := bcast.CreateBatch(idBatch, createdBatch)
 		batchTask := &SendBroadcastBatch{
 			BatchTask:      BatchTask{BatchOwnerUUID: uuids.UUID(bcast.UUID), TotalBatches: len(idBatches)},
 			BroadcastBatch: batch,
