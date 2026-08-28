@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/mailroom/v26/core/models"
@@ -46,7 +47,7 @@ func (t *StartFlow) Perform(ctx context.Context, rt *runtime.Runtime, oa *models
 	if err := createFlowStartBatches(ctx, rt, oa, t.FlowStart); err != nil {
 		t.FlowStart.SetFailed(ctx, rt.DB)
 
-		// if error is user created query error.. don't escalate error to sentry
+		// if error is user created query error.. don't treat it as a task error
 		isQueryError, _ := contactql.IsQueryError(err)
 		if !isQueryError {
 			return err
@@ -81,7 +82,8 @@ func createFlowStartBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 			limit = 1
 		}
 
-		contactIDs, err = search.ResolveRecipients(ctx, rt, oa, start.CreatedByID, flow, &search.Recipients{
+		// created contacts don't need explicit indexing here because starting them in a flow will index them
+		contactIDs, _, err = search.ResolveRecipients(ctx, rt, oa, start.CreatedByID, flow, &search.Recipients{
 			ContactIDs:      start.ContactIDs,
 			GroupIDs:        start.GroupIDs,
 			URNs:            start.URNs,
@@ -115,6 +117,14 @@ func createFlowStartBatches(ctx context.Context, rt *runtime.Runtime, oa *models
 
 	// split the contact ids into batches to become batch tasks
 	idBatches := slices.Collect(slices.Chunk(contactIDs, FlowStartBatchSize))
+
+	RecordQueued(ctx, rt, start.UUID, &BatchInfo{
+		Type:     TypeStartFlowBatch,
+		OrgID:    start.OrgID,
+		Label:    flow.Name(),
+		Total:    len(idBatches),
+		QueuedOn: dates.Now(),
+	})
 
 	for i, idBatch := range idBatches {
 		batchTask := &StartFlowBatch{

@@ -87,6 +87,58 @@ const (
 	MsgStatusFailed       = MsgStatus("F") // outgoing msg which has failed permanently
 )
 
+// MsgFolder is the denormalized folder that a message belongs to, stored on the message itself so that fetching a
+// folder's messages is a single equality. Every message belongs to exactly one folder - the last two codes exist so
+// that a null folder column means only "not yet written".
+type MsgFolder string
+
+const (
+	MsgFolderInbox    = MsgFolder("I") // incoming, visible, handled, no flow
+	MsgFolderHandled  = MsgFolder("W") // incoming, visible, handled, has flow
+	MsgFolderArchived = MsgFolder("A") // incoming, archived, handled
+	MsgFolderOutbox   = MsgFolder("O") // outgoing, visible, initializing/queued/errored
+	MsgFolderSent     = MsgFolder("S") // outgoing, visible, wired/sent/delivered/read
+	MsgFolderFailed   = MsgFolder("X") // outgoing, visible, failed
+	MsgFolderPending  = MsgFolder("P") // incoming, not yet handled
+	MsgFolderDeleted  = MsgFolder("D") // deleted by the user or by the sender
+)
+
+// DeriveMsgFolder derives the folder that a message belongs to. This is a port of Msg.derive_folder in the main
+// codebase and the precedence matters: a message can be archived or deleted whilst still pending, and such messages
+// must not appear in the archived folder. Panics for state combinations that shouldn't exist rather than returning
+// no folder, because a message without a folder can't be found by folder.
+func DeriveMsgFolder(direction Direction, status MsgStatus, visibility MsgVisibility, hasFlow bool) MsgFolder {
+	if visibility == VisibilityDeletedByUser || visibility == VisibilityDeletedBySender {
+		return MsgFolderDeleted
+	}
+
+	if direction == DirectionIn {
+		switch status {
+		case MsgStatusPending:
+			return MsgFolderPending
+		case MsgStatusHandled:
+			if visibility == VisibilityArchived {
+				return MsgFolderArchived
+			}
+			if hasFlow {
+				return MsgFolderHandled
+			}
+			return MsgFolderInbox
+		}
+	} else if visibility == VisibilityVisible {
+		switch status {
+		case MsgStatusInitializing, MsgStatusQueued, MsgStatusErrored:
+			return MsgFolderOutbox
+		case MsgStatusWired, MsgStatusSent, MsgStatusDelivered, MsgStatusRead:
+			return MsgFolderSent
+		case MsgStatusFailed:
+			return MsgFolderFailed
+		}
+	}
+
+	panic(fmt.Sprintf("unable to derive folder for msg with direction=%s status=%s visibility=%s", direction, status, visibility))
+}
+
 const (
 	UnsendableReasonOrgSuspended core.UnsendableReason = "org_suspended"
 	UnsendableReasonLooping      core.UnsendableReason = "looping"
@@ -171,6 +223,7 @@ type Msg struct {
 		Direction          Direction     `db:"direction"`
 		Status             MsgStatus     `db:"status"`
 		Visibility         MsgVisibility `db:"visibility"`
+		Folder             MsgFolder     `db:"folder"`
 		IsAndroid          bool          `db:"is_android"`
 		MsgType            MsgType       `db:"msg_type"`
 		MsgCount           int           `db:"msg_count"`
@@ -206,6 +259,7 @@ func (m *Msg) SentOn() *time.Time            { return m.m.SentOn }
 func (m *Msg) Direction() Direction          { return m.m.Direction }
 func (m *Msg) Status() MsgStatus             { return m.m.Status }
 func (m *Msg) Visibility() MsgVisibility     { return m.m.Visibility }
+func (m *Msg) Folder() MsgFolder             { return m.m.Folder }
 func (m *Msg) Type() MsgType                 { return m.m.MsgType }
 func (m *Msg) ErrorCount() int               { return m.m.ErrorCount }
 func (m *Msg) NextAttempt() *time.Time       { return m.m.NextAttempt }
@@ -570,7 +624,9 @@ func NormalizeAttachment(cfg *runtime.Config, attachment utils.Attachment) utils
 func InsertMessages(ctx context.Context, tx DBorTx, msgs []*Msg) error {
 	is := make([]any, len(msgs))
 	for i := range msgs {
-		is[i] = &msgs[i].m
+		m := &msgs[i].m
+		m.Folder = DeriveMsgFolder(m.Direction, m.Status, m.Visibility, m.FlowID != NilFlowID)
+		is[i] = m
 	}
 
 	return BulkQuery(ctx, "insert messages", tx, sqlInsertMsgSQL, is)
@@ -579,10 +635,10 @@ func InsertMessages(ctx context.Context, tx DBorTx, msgs []*Msg) error {
 const sqlInsertMsgSQL = `
 INSERT INTO
 msgs_msg(uuid, text, attachments, quickreplies, locale, templating, high_priority, created_on, modified_on, sent_on, direction, status,
-		 visibility, msg_type, msg_count, error_count, next_attempt, failed_reason, channel_id, is_android,
+		 visibility, folder, msg_type, msg_count, error_count, next_attempt, failed_reason, channel_id, is_android,
 		 contact_id, contact_urn_id, org_id, flow_id, broadcast_id, ticket_uuid, created_by_id)
   VALUES(:uuid, :text, :attachments, :quickreplies, :locale, :templating, :high_priority, :created_on, now(), :sent_on, :direction, :status,
-		 :visibility, :msg_type, :msg_count, :error_count, :next_attempt, :failed_reason, :channel_id, :is_android,
+		 :visibility, :folder, :msg_type, :msg_count, :error_count, :next_attempt, :failed_reason, :channel_id, :is_android,
 		 :contact_id, :contact_urn_id, :org_id, :flow_id, :broadcast_id, :ticket_uuid, :created_by_id)
 RETURNING id, modified_on`
 
@@ -598,9 +654,11 @@ func MarkMessageHandled(ctx context.Context, tx DBorTx, msgUUID events.EventUUID
 		ticketUUID = ticket.UUID
 	}
 
+	folder := DeriveMsgFolder(DirectionIn, status, visibility, flowID != NilFlowID)
+
 	_, err := tx.ExecContext(ctx,
-		`UPDATE msgs_msg SET status = $2, visibility = $3, flow_id = $4, ticket_uuid = $5, attachments = $6, log_uuids = array_cat(log_uuids, $7) WHERE uuid = $1`,
-		msgUUID, status, visibility, flowID, null.String(ticketUUID), pq.Array(attachments), pq.Array(logUUIDs),
+		`UPDATE msgs_msg SET status = $2, visibility = $3, folder = $4, flow_id = $5, ticket_uuid = $6, attachments = $7, log_uuids = array_cat(log_uuids, $8) WHERE uuid = $1`,
+		msgUUID, status, visibility, folder, flowID, null.String(ticketUUID), pq.Array(attachments), pq.Array(logUUIDs),
 	)
 	if err != nil {
 		return fmt.Errorf("error marking msg %s as handled: %w", msgUUID, err)
@@ -622,8 +680,8 @@ func MarkMessagesQueued(ctx context.Context, db DBorTx, msgs []*Msg) error {
 
 const sqlUpdateMsgStatus = `
 UPDATE msgs_msg
-   SET status = m.status, next_attempt = m.next_attempt
-  FROM (VALUES(:id::bigint, :status, :next_attempt::timestamptz)) AS m(id, status, next_attempt)
+   SET status = m.status, folder = m.folder, next_attempt = m.next_attempt
+  FROM (VALUES(:id::bigint, :status, :folder, :next_attempt::timestamptz)) AS m(id, status, folder, next_attempt)
  WHERE msgs_msg.id = m.id`
 
 func updateMessageStatus(ctx context.Context, db DBorTx, msgs []*Msg, status MsgStatus, nextAttempt *time.Time) error {
@@ -632,6 +690,7 @@ func updateMessageStatus(ctx context.Context, db DBorTx, msgs []*Msg, status Msg
 		m := &msg.m
 		m.Status = status
 		m.NextAttempt = nextAttempt
+		m.Folder = DeriveMsgFolder(m.Direction, m.Status, m.Visibility, m.FlowID != NilFlowID)
 		is[i] = m
 	}
 
@@ -724,13 +783,13 @@ func PrepareMessagesForRetry(ctx context.Context, db *sqlx.DB, msgs []*Msg) ([]*
 
 const sqlUpdateMsgForResending = `
 UPDATE msgs_msg m
-   SET channel_id = r.channel_id, status = 'Q', error_count = 0, failed_reason = NULL, sent_on = NULL, modified_on = NOW()
+   SET channel_id = r.channel_id, status = 'Q', folder = 'O', error_count = 0, failed_reason = NULL, sent_on = NULL, modified_on = NOW()
   FROM (VALUES(:id::bigint, :channel_id::int)) AS r(id, channel_id)
  WHERE m.id = r.id`
 
 const sqlUpdateMsgResendFailed = `
 UPDATE msgs_msg m
-   SET channel_id = NULL, status = 'F', error_count = 0, failed_reason = 'D', sent_on = NULL, modified_on = NOW()
+   SET channel_id = NULL, status = 'F', folder = 'X', error_count = 0, failed_reason = 'D', sent_on = NULL, modified_on = NOW()
  WHERE id = ANY($1)`
 
 // PrepareMessagesForResend prepares messages for resending by reselecting a channel and marking them as QUEUED
@@ -780,7 +839,7 @@ func PrepareMessagesForResend(ctx context.Context, rt *runtime.Runtime, oa *OrgA
 
 		if ch != nil {
 			msg.m.ChannelID = ch.ID()
-			msg.m.Status = MsgStatusPending
+			msg.m.Status = MsgStatusQueued
 			msg.m.SentOn = nil
 			msg.m.ErrorCount = 0
 			msg.m.FailedReason = ""
@@ -824,7 +883,7 @@ WITH rows AS (
 	WHERE org_id = $1 AND direction = 'O' AND channel_id = $2 AND status IN ('P', 'Q', 'E') 
 	LIMIT 1000
 )
-UPDATE msgs_msg SET status = 'F', failed_reason = $3, modified_on = NOW() WHERE id IN (SELECT id FROM rows)`
+UPDATE msgs_msg SET status = 'F', folder = 'X', failed_reason = $3, modified_on = NOW() WHERE id IN (SELECT id FROM rows)`
 
 func FailChannelMessages(ctx context.Context, db *sql.DB, orgID OrgID, channelID ChannelID, failedReason MsgFailedReason) error {
 	for {
@@ -839,6 +898,164 @@ func FailChannelMessages(ctx context.Context, db *sql.DB, orgID OrgID, channelID
 		}
 	}
 	return nil
+}
+
+// the WHERE on the update repeats the status check from the CTE so that a message which was sent, failed or
+// retried between the two can't be clobbered. The join to contacts_contact is only for the contact UUID needed by
+// the event tags - msgs_msg.contact_id is a non-null protected FK so it never excludes a row, which is what lets
+// callers loop until this returns nothing.
+const sqlFailOldAndroidMessages = `
+WITH rows AS (
+	SELECT id FROM msgs_msg
+	WHERE direction = 'O' AND is_android = TRUE AND status IN ('I', 'Q', 'E') AND created_on <= $1
+	LIMIT $2
+)
+   UPDATE msgs_msg SET status = 'F', folder = $3, failed_reason = $4, modified_on = NOW()
+     FROM rows, contacts_contact c
+    WHERE msgs_msg.id = rows.id AND msgs_msg.status IN ('I', 'Q', 'E') AND c.id = msgs_msg.contact_id
+RETURNING msgs_msg.org_id AS org_id, msgs_msg.uuid AS msg_uuid, c.uuid AS contact_uuid`
+
+// FailOldAndroidMessages fails up to limit outgoing Android messages created on or before the given time which are
+// still waiting to be sent, i.e. their relayer hasn't synced and they'd otherwise sit in the outbox forever. Only
+// Android messages are failed this way because messages on other channel types are still in courier's queue.
+//
+// It returns an event tag recording the change for each message failed (to be queued to the history table), so
+// callers should keep calling until it returns nothing.
+func FailOldAndroidMessages(ctx context.Context, db DBorTx, olderThan time.Time, limit int) ([]*EventTag, error) {
+	// outgoing messages are always visible, so the failed folder follows from the status alone
+	folder := DeriveMsgFolder(DirectionOut, MsgStatusFailed, VisibilityVisible, false)
+
+	rows := []*struct {
+		OrgID       OrgID            `db:"org_id"`
+		MsgUUID     events.EventUUID `db:"msg_uuid"`
+		ContactUUID core.ContactUUID `db:"contact_uuid"`
+	}{}
+
+	if err := db.SelectContext(ctx, &rows, sqlFailOldAndroidMessages, olderThan, limit, folder, MsgFailedTooOld); err != nil {
+		return nil, fmt.Errorf("error failing old android messages: %w", err)
+	}
+
+	tags := make([]*EventTag, len(rows))
+	for i, r := range rows {
+		tags[i] = NewMsgStatusTag(r.OrgID, r.ContactUUID, r.MsgUUID, MsgStatusFailed, MsgFailedTooOld)
+	}
+
+	return tags, nil
+}
+
+// AndroidStatusUpdate is a status change reported by an Android relayer during a sync, for one of the outgoing
+// messages it was asked to send.
+type AndroidStatusUpdate struct {
+	MsgUUID events.EventUUID
+	Status  MsgStatus
+
+	// the time to record as the message's sent_on, or nil to leave it as it is
+	SentOn *time.Time
+
+	// whether SentOn replaces an existing sent_on, rather than only filling in a missing one
+	OverwriteSentOn bool
+}
+
+// like sqlFailOldAndroidMessages the join to contacts_contact is only for the contact UUID needed by the event tags.
+// The direction and visibility checks are in the WHERE rather than only in the caller so that a message which changed
+// after we read it can't be given a folder that doesn't match its actual state.
+const sqlUpdateAndroidMsgStatuses = `
+   UPDATE msgs_msg
+      SET status = u.status, folder = u.folder, modified_on = NOW(),
+          sent_on = CASE WHEN u.overwrite_sent_on THEN u.sent_on ELSE COALESCE(msgs_msg.sent_on, u.sent_on) END
+     FROM UNNEST($2::uuid[], $3::text[], $4::text[], $5::timestamptz[], $6::bool[]) AS u(uuid, status, folder, sent_on, overwrite_sent_on), contacts_contact c
+    WHERE msgs_msg.uuid = u.uuid AND msgs_msg.org_id = $1 AND msgs_msg.direction = 'O' AND msgs_msg.visibility = 'V' AND c.id = msgs_msg.contact_id
+RETURNING msgs_msg.uuid AS msg_uuid, msgs_msg.status AS status, c.uuid AS contact_uuid`
+
+// UpdateAndroidMessageStatuses applies status changes reported by an Android relayer to the given org's messages,
+// ignoring any which aren't outgoing and visible. Because they're all applied in a single statement, two updates for
+// the same message would silently overwrite each other, so callers have to fold those into one first.
+//
+// It returns an event tag recording the change for each message actually updated, to be queued to the history table
+// by the caller, because nothing else records these transitions.
+func UpdateAndroidMessageStatuses(ctx context.Context, db DBorTx, orgID OrgID, updates []*AndroidStatusUpdate) ([]*EventTag, error) {
+	if len(updates) == 0 {
+		return nil, nil
+	}
+
+	uuids := make([]events.EventUUID, len(updates))
+	statuses := make([]MsgStatus, len(updates))
+	folders := make([]MsgFolder, len(updates))
+	sentOns := make([]*time.Time, len(updates))
+	overwriteSentOns := make([]bool, len(updates))
+	seen := make(map[events.EventUUID]bool, len(updates))
+
+	for i, u := range updates {
+		if seen[u.MsgUUID] {
+			return nil, fmt.Errorf("more than one update for message %s", u.MsgUUID)
+		}
+		seen[u.MsgUUID] = true
+
+		uuids[i] = u.MsgUUID
+		statuses[i] = u.Status
+		// the folder of an outgoing message follows from its status alone, and the WHERE only touches rows which are
+		// actually outgoing and visible
+		folders[i] = DeriveMsgFolder(DirectionOut, u.Status, VisibilityVisible, false)
+		sentOns[i] = u.SentOn
+		// there's nothing to overwrite sent_on with if there's no new value, and clearing it would break the
+		// constraint that a sent message has a sent_on
+		overwriteSentOns[i] = u.OverwriteSentOn && u.SentOn != nil
+	}
+
+	rows := []*struct {
+		MsgUUID     events.EventUUID `db:"msg_uuid"`
+		Status      MsgStatus        `db:"status"`
+		ContactUUID core.ContactUUID `db:"contact_uuid"`
+	}{}
+
+	err := db.SelectContext(ctx, &rows, sqlUpdateAndroidMsgStatuses, orgID,
+		pq.Array(uuids), pq.Array(statuses), pq.Array(folders), pq.Array(sentOns), pq.Array(overwriteSentOns),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error updating android message statuses: %w", err)
+	}
+
+	tags := make([]*EventTag, len(rows))
+	for i, r := range rows {
+		tags[i] = NewMsgStatusTag(orgID, r.ContactUUID, r.MsgUUID, r.Status, NilMsgFailedReason)
+	}
+
+	return tags, nil
+}
+
+// AndroidOutboxMsg is a queued outgoing message being offered to a channel's relayer, with the phone number to send
+// it to.
+type AndroidOutboxMsg struct {
+	ID    MsgID  `db:"id"`
+	Text  string `db:"text"`
+	Phone string `db:"phone"`
+}
+
+// the relayer is given messages that are still queued, i.e. not yet claimed as sent by any earlier sync. Messages
+// without a URN can't be sent by a relayer at all so they're excluded rather than offered and silently dropped.
+const sqlSelectAndroidOutbox = `
+    SELECT m.id, m.text, u.path AS phone
+      FROM msgs_msg m
+INNER JOIN contacts_contacturn u ON u.id = m.contact_urn_id
+     WHERE m.channel_id = $1 AND m.direction = 'O' AND m.status = 'Q' AND NOT (m.id = ANY($2))
+  ORDER BY m.created_on ASC
+     LIMIT $3`
+
+// GetAndroidOutbox returns the queued outgoing messages to offer to a channel's relayer, oldest first, excluding any
+// the relayer has told us it already holds.
+func GetAndroidOutbox(ctx context.Context, db DBorTx, channelID ChannelID, exclude []MsgID, limit int) ([]*AndroidOutboxMsg, error) {
+	msgs := []*AndroidOutboxMsg{}
+
+	// a nil slice becomes a NULL array, and everything compared against that is NULL rather than excluded
+	if exclude == nil {
+		exclude = []MsgID{}
+	}
+
+	if err := db.SelectContext(ctx, &msgs, sqlSelectAndroidOutbox, channelID, pq.Array(exclude), limit); err != nil {
+		return nil, fmt.Errorf("error selecting android outbox messages: %w", err)
+	}
+
+	return msgs, nil
 }
 
 // CreateMsgOut creates a new outgoing message to the given contact, resolving the destination etc
@@ -920,9 +1137,56 @@ func CreateMsgOut(ctx context.Context, rt *runtime.Runtime, oa *OrgAssets, c *co
 	return core.NewMsgOut(urn, channelRef, content, templating, locale, unsendableReason), nil
 }
 
+// the from_visibility check is what makes this safe against a message being deleted between being loaded and being
+// updated here - without it we'd resurrect a message whose content has already been cleared
+const sqlUpdateMsgVisibility = `
+UPDATE msgs_msg
+   SET visibility = m.visibility, folder = m.folder, modified_on = NOW()
+  FROM (VALUES(:id::bigint, :visibility, :folder, :from_visibility)) AS m(id, visibility, folder, from_visibility)
+ WHERE msgs_msg.id = m.id AND msgs_msg.visibility = m.from_visibility`
+
+type msgVisibilityUpdate struct {
+	ID             MsgID         `db:"id"`
+	Visibility     MsgVisibility `db:"visibility"`
+	Folder         MsgFolder     `db:"folder"`
+	FromVisibility MsgVisibility `db:"from_visibility"`
+}
+
+// ArchiveMessages archives the given incoming messages, ignoring any that aren't currently visible
+func ArchiveMessages(ctx context.Context, db DBorTx, msgs []*Msg) error {
+	return updateMessageVisibility(ctx, db, msgs, VisibilityVisible, VisibilityArchived)
+}
+
+// RestoreMessages un-archives the given incoming messages, ignoring any that aren't currently archived
+func RestoreMessages(ctx context.Context, db DBorTx, msgs []*Msg) error {
+	return updateMessageVisibility(ctx, db, msgs, VisibilityArchived, VisibilityVisible)
+}
+
+func updateMessageVisibility(ctx context.Context, db DBorTx, msgs []*Msg, from, to MsgVisibility) error {
+	updates := make([]*msgVisibilityUpdate, 0, len(msgs))
+
+	for _, msg := range msgs {
+		m := &msg.m
+
+		// ignore messages that aren't in the visibility we're transitioning from, which includes deleted messages
+		if m.Visibility != from {
+			continue
+		}
+
+		updates = append(updates, &msgVisibilityUpdate{
+			ID:             m.ID,
+			Visibility:     to,
+			Folder:         DeriveMsgFolder(m.Direction, m.Status, to, m.FlowID != NilFlowID),
+			FromVisibility: from,
+		})
+	}
+
+	return BulkQuery(ctx, "updating message visibility", db, sqlUpdateMsgVisibility, updates)
+}
+
 const sqlUpdateMsgDeleted = `
    UPDATE msgs_msg
-      SET visibility = $3, text = '', attachments = '{}'
+      SET visibility = $3, folder = 'D', text = '', attachments = '{}'
     WHERE org_id = $1 AND uuid = ANY($2) AND direction = 'I' AND visibility IN ('V', 'A')
 RETURNING id`
 

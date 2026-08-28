@@ -1,3 +1,43 @@
+v26.3.53 (2026-08-27)
+-------------------------
+ * Add endpoint for Android relayer syncs
+ * Add endpoint for applying message status changes reported by Android relayers
+ * Move test phone numbers onto the range reserved for fiction
+ * Update to goflow v0.293.1
+
+v26.3.52 (2026-08-26)
+-------------------------
+ * Add cron to fail old Android messages that are still waiting to be sent
+ * Reduce Android give-up age from 7 days to 72 hours
+ * Update to gocommon v1.94.2
+
+v26.3.51 (2026-08-26)
+-------------------------
+ * Add msg/archive and msg/restore endpoints
+
+v26.3.50 (2026-08-25)
+-------------------------
+ * Fix resent messages reporting pending status instead of queued
+ * Write and maintain the denormalized folder column on messages
+
+v26.3.49 (2026-08-25)
+-------------------------
+ * Remove Sentry in favor of a panic handler hook and pluggable log handler
+
+v26.3.48 (2026-08-24)
+-------------------------
+ * Delete channel logs of deleted messages from DynamoDB
+ * Restructure mrindex command into mrelastic and add contacts prune mode
+
+v26.3.47 (2026-08-19)
+-------------------------
+ * Add an index of in-flight batch task sets, readable via tasks.GetBatchTasks
+ * Refresh batch tracker keys as batches complete so sets which outlive the tracker TTL aren't re-marked as started
+ * Index contacts created from URN recipients even when excluded by not_seen_since
+ * Fix indexing of contacts created by sending a broadcast to raw URNs
+ * Index created contacts via a contact_created pseudo event to avoid duplicate ES writes
+ * Index contacts created by an import which produce no change events
+
 v26.3.46 (2026-08-17)
 -------------------------
  * Update to goflow v0.293.0 and block webhook calls to configured domains instead of allowing them with a warning
