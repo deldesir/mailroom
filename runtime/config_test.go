@@ -9,40 +9,37 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestLoadConfig(t *testing.T) {
-	// caller can customize the base config..
-	base := runtime.NewDefaultConfig()
-	base.Domain = "example.com"
-	base.WebhooksBlockedDomains = []string{"chat.example.com"}
+func TestConfigParse(t *testing.T) {
+	// the defaults are valid
+	assert.NoError(t, runtime.NewDefaultConfig().Parse())
 
-	cfg, err := runtime.LoadConfig(base, `--log-level=warn`)
-	assert.NoError(t, err)
-	assert.Equal(t, "example.com", cfg.Domain)
-	assert.Equal(t, []string{"chat.example.com"}, cfg.WebhooksBlockedDomains)
+	cfg := runtime.NewDefaultConfig()
+	cfg.DB = "??"
+	cfg.ReadonlyDB = "??"
+	cfg.Valkey = "??"
+	cfg.ElasticEndpoint = "??"
+	assert.EqualError(t, cfg.Parse(), "invalid configuration: field 'DB' is not a valid URL, field 'ReadonlyDB' is not a valid URL, field 'Valkey' is not a valid URL, field 'ElasticEndpoint' is not a valid URL")
 
-	// but explicitly set values still take precedence
-	base = runtime.NewDefaultConfig()
-	base.Domain = "example.com"
-	base.WebhooksBlockedDomains = []string{"chat.example.com"}
+	cfg = runtime.NewDefaultConfig()
+	cfg.DB = "mysql://temba:temba@postgres/temba"
+	cfg.Valkey = "bluedis://valkey:6379/15"
+	assert.EqualError(t, cfg.Parse(), "invalid configuration: field 'DB' must start with 'postgres:', field 'Valkey' must start with 'valkey:' or 'valkeys:'")
 
-	cfg, err = runtime.LoadConfig(base, `--domain=temba.io`)
-	assert.NoError(t, err)
-	assert.Equal(t, "temba.io", cfg.Domain)
-	assert.Equal(t, []string{"chat.example.com"}, cfg.WebhooksBlockedDomains)
-}
+	// redis:// is a valid Valkey URL as far as the pool is concerned, but our config surface is Valkey named
+	cfg = runtime.NewDefaultConfig()
+	cfg.Valkey = "redis://valkey:6379/15"
+	assert.EqualError(t, cfg.Parse(), "invalid configuration: field 'Valkey' must start with 'valkey:' or 'valkeys:'")
 
-func TestValidate(t *testing.T) {
-	_, err := runtime.LoadConfig(runtime.NewDefaultConfig(), `--db=??`, `--readonly-db=??`, `--valkey=??`, `--elastic-endpoint=??`)
-	assert.EqualError(t, err, "invalid configuration: field 'DB' is not a valid URL, field 'ReadonlyDB' is not a valid URL, field 'Valkey' is not a valid URL, field 'ElasticEndpoint' is not a valid URL")
-
-	_, err = runtime.LoadConfig(runtime.NewDefaultConfig(), `--db=mysql://temba:temba@postgres/temba`, `--valkey=bluedis://valkey:6379/15`)
-	assert.EqualError(t, err, "invalid configuration: field 'DB' must start with 'postgres:', field 'Valkey' must start with 'valkey:'")
+	// valkeys:// selects a TLS connection
+	cfg = runtime.NewDefaultConfig()
+	cfg.Valkey = "valkeys://valkey:6379/15"
+	assert.NoError(t, cfg.Parse())
 }
 
 func TestDisallowedNetworksParsing(t *testing.T) {
 	// check default value
-	cfg, err := runtime.LoadConfig(runtime.NewDefaultConfig(), `--log-level=warn`)
-	assert.NoError(t, err)
+	cfg := runtime.NewDefaultConfig()
+	assert.NoError(t, cfg.Parse())
 
 	mustParseCIDR := func(s string) *net.IPNet {
 		_, n, perr := net.ParseCIDR(s)
@@ -64,31 +61,38 @@ func TestDisallowedNetworksParsing(t *testing.T) {
 		mustParseCIDR("0.0.0.0/8"),
 	}, ipNets)
 
-	// test with invalid CSV
-	_, err = runtime.LoadConfig(runtime.NewDefaultConfig(), `--disallowed-networks="127.0.0.1`)
-	assert.Error(t, err)
+	// test with invalid network
+	cfg = runtime.NewDefaultConfig()
+	cfg.DisallowedNetworks = []string{`"127.0.0.1`}
+	assert.Error(t, cfg.Parse())
 
 	// test with single IP
-	cfg, err = runtime.LoadConfig(runtime.NewDefaultConfig(), `--disallowed-networks="127.0.0.1"`)
-	assert.NoError(t, err)
+	cfg = runtime.NewDefaultConfig()
+	cfg.DisallowedNetworks = []string{`127.0.0.1`}
+	assert.NoError(t, cfg.Parse())
 
 	ips, ipNets = cfg.DisallowedIPs, cfg.DisallowedNets
-	assert.NoError(t, err)
 	assert.Equal(t, []net.IP{net.IPv4(127, 0, 0, 1)}, ips)
 	assert.Equal(t, []*net.IPNet{}, ipNets)
 }
 
 func TestIDObfuscationKeyParsing(t *testing.T) {
 	// check default value
-	cfg, err := runtime.LoadConfig(runtime.NewDefaultConfig(), "--log-level=warn")
-	assert.NoError(t, err)
+	cfg := runtime.NewDefaultConfig()
+	assert.NoError(t, cfg.Parse())
 	assert.Equal(t, [4]uint32{0x000A3B1C, 0x000D2E3F, 0x0001A2B3, 0x00C0FFEE}, cfg.IDObfuscationKeyParsed)
 
-	cfg, err = runtime.LoadConfig(runtime.NewDefaultConfig(), "--id-obfuscation-key=00000000000000000000000000000000")
-	assert.NoError(t, err)
+	cfg = runtime.NewDefaultConfig()
+	cfg.IDObfuscationKey = "00000000000000000000000000000000"
+	assert.NoError(t, cfg.Parse())
 	assert.Equal(t, [4]uint32{0, 0, 0, 0}, cfg.IDObfuscationKeyParsed)
 
-	cfg, err = runtime.LoadConfig(runtime.NewDefaultConfig(), "--id-obfuscation-key=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF")
-	assert.NoError(t, err)
+	cfg = runtime.NewDefaultConfig()
+	cfg.IDObfuscationKey = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+	assert.NoError(t, cfg.Parse())
 	assert.Equal(t, [4]uint32{0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF}, cfg.IDObfuscationKeyParsed)
+
+	cfg = runtime.NewDefaultConfig()
+	cfg.IDObfuscationKey = "not-hex"
+	assert.Error(t, cfg.Parse())
 }

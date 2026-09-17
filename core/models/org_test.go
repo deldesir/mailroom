@@ -32,7 +32,8 @@ func TestLoadOrg(t *testing.T) {
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_languages = '{"fra", "eng"}' WHERE id = $1`, testdb.Org1.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_smtp = 'smtp://foo:bar' WHERE id = $1`, testdb.Org1.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET features = '{"unrestricted_webhooks"}' WHERE id = $1`, testdb.Org1.ID)
-	rt.DB.MustExec(`UPDATE orgs_org SET is_suspended = TRUE, suspended_on = NOW() WHERE id = $1`, testdb.Org2.ID)
+	rt.DB.MustExec(`UPDATE orgs_org SET limits = '{"contacts": 1000}' WHERE id = $1`, testdb.Org1.ID)
+	rt.DB.MustExec(`UPDATE orgs_org SET is_suspended = TRUE, suspended_on = NOW(), limits = '{"groups": 250}' WHERE id = $1`, testdb.Org2.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_languages = '{}' WHERE id = $1`, testdb.Org2.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET date_format = 'M' WHERE id = $1`, testdb.Org2.ID)
 
@@ -44,6 +45,7 @@ func TestLoadOrg(t *testing.T) {
 	assert.True(t, org.HasFeature(models.FeatureUnrestrictedWebhooks))
 	assert.False(t, org.HasFeature("teams"))
 	assert.Equal(t, "smtp://foo:bar", org.FlowSMTP())
+	assert.Equal(t, 1000, org.ContactLimit())
 	assert.Equal(t, envs.DateFormatDayMonthYear, org.Environment().DateFormat())
 	assert.Equal(t, envs.TimeFormatHourMinute, org.Environment().TimeFormat())
 	assert.Equal(t, envs.RedactionPolicyNone, org.Environment().RedactionPolicy())
@@ -59,6 +61,7 @@ func TestLoadOrg(t *testing.T) {
 	assert.True(t, org.Suspended())
 	assert.False(t, org.HasFeature(models.FeatureUnrestrictedWebhooks))
 	assert.Equal(t, "", org.FlowSMTP())
+	assert.Equal(t, models.NoLimit, org.ContactLimit()) // limits set but no contacts key
 	assert.Equal(t, envs.DateFormatMonthDayYear, org.Environment().DateFormat())
 	assert.Equal(t, []i18n.Language{}, org.Environment().AllowedLanguages())
 	assert.Equal(t, i18n.NilLanguage, org.Environment().DefaultLanguage())
@@ -180,7 +183,7 @@ func TestStoreAttachment(t *testing.T) {
 	attachment, err := org.StoreAttachment(context.Background(), rt, "668383ba-387c-49bc-b164-1213ac0ea7aa.jpg", "image/jpeg", image)
 	require.NoError(t, err)
 
-	expectedURL := fmt.Sprintf("http://localstack:4566/%s/attachments/1/6683/83ba/668383ba-387c-49bc-b164-1213ac0ea7aa.jpg", rt.Config.S3AttachmentsBucket)
+	expectedURL := fmt.Sprintf("http://s3:8333/%s/attachments/1/6683/83ba/668383ba-387c-49bc-b164-1213ac0ea7aa.jpg", rt.Config.S3AttachmentsBucket)
 	assert.Equal(t, utils.Attachment("image/jpeg:"+expectedURL), attachment)
 
 	// err trying to read from same reader again

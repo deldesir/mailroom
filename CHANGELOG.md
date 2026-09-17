@@ -1,3 +1,87 @@
+v26.3.70 (2026-09-17)
+-------------------------
+ * Add a shutdown watchdog that exits hard if graceful shutdown wedges
+ * Give LLM translate calls a deadline below the server write timeout
+ * Update test database dump for the rename of knowledge sources
+
+v26.3.69 (2026-09-15)
+-------------------------
+ * Write msg_uuid when adding labels to messages
+
+v26.3.68 (2026-09-15)
+-------------------------
+ * Add internal endpoint to add or remove a label on incoming messages
+
+v26.3.67 (2026-09-15)
+-------------------------
+ * Run tests against SeaweedFS instead of localstack
+
+v26.3.66 (2026-09-14)
+-------------------------
+ * Keep next_attempt set only whilst a message awaits a retry
+
+v26.3.65 (2026-09-14)
+-------------------------
+ * Select old Android messages to fail by folder rather than by status and visibility
+ * Update to goflow v0.293.6
+
+v26.3.64 (2026-09-14)
+-------------------------
+ * Remove support for broadcasts to contacts at a flow node
+
+v26.3.63 (2026-09-14)
+-------------------------
+ * Stop writing archived visibility on messages and let the folder column be the only record of a message being archived
+ * Don't move a deleted message between folders whatever its folder says
+
+v26.3.62 (2026-09-11)
+-------------------------
+ * Write each outgoing message status to the history table as its own immutable item
+ * Record messages failed by channel removal or a failed resend in contact history
+ * Delete a message's previous failed and errored history items when it's resent
+
+v26.3.61 (2026-09-11)
+-------------------------
+ * Move config loading into cmd.LoadConfig so apps built on top of mailroom can embed runtime.Config
+ * Update to gocommon v1.95.1 and goflow v0.293.5
+
+v26.3.60 (2026-09-09)
+-------------------------
+ * Lower the default contact limit to 10 million
+ * Update to gocommon v1.95.0 and goflow v0.293.4
+
+v26.3.59 (2026-09-09)
+-------------------------
+ * Add enforcement of per-workspace contact limit, falling back to a configured default when a workspace has no explicit limit
+ * Make Android sync endpoint a no-op for channels without an FCM registration id
+ * Update to goflow v0.293.3
+
+v26.3.58 (2026-09-08)
+-------------------------
+ * Load members of an org's admin groups as administrators of that org
+ * Update from Go 1.26 to 1.27
+
+v26.3.57 (2026-09-04)
+-------------------------
+ * Read archived state of messages from folder rather than visibility
+
+v26.3.56 (2026-09-02)
+-------------------------
+ * Fail messages for a removed channel by folder so the query is served by the folder index
+ * Update to gocommon v1.94.4
+
+v26.3.55 (2026-09-01)
+-------------------------
+ * Don't let message status updates clobber messages which have been deleted
+ * Fix mrelastic flags never being seen because the config loader parses the command line first
+ * Remove mrelastic's -start-uuid flag
+ * Update dependencies
+ * Remove internal Android endpoints that are no longer called
+
+v26.3.54 (2026-08-31)
+-------------------------
+ * Move relayer sync endpoint to web/public with the other internet-facing endpoints
+
 v26.3.53 (2026-08-27)
 -------------------------
  * Add endpoint for Android relayer syncs

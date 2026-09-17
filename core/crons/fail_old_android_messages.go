@@ -42,9 +42,11 @@ func (c *FailOldAndroidMessagesCron) Run(ctx context.Context, rt *runtime.Runtim
 		}
 
 		// record each change in the contact's history so that clients rendering the message see it as failed
-		for _, tag := range tags {
-			if _, err := rt.Dynamo.History.Queue(tag); err != nil {
-				return nil, fmt.Errorf("error queuing status tag to writer: %w", err)
+		if rt.Dynamo.Enabled() {
+			for _, tag := range tags {
+				if _, err := rt.Dynamo.History.Queue(tag); err != nil {
+					return nil, fmt.Errorf("error queuing status tag to writer: %w", err)
+				}
 			}
 		}
 

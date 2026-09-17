@@ -81,9 +81,11 @@ func (b *StatusBatch) Apply(ctx context.Context, rt *runtime.Runtime, orgID mode
 		return fmt.Errorf("error updating message statuses: %w", err)
 	}
 
-	for _, tag := range tags {
-		if _, err := rt.Dynamo.History.Queue(tag); err != nil {
-			return fmt.Errorf("error queuing status tag to writer: %w", err)
+	if rt.Dynamo.Enabled() {
+		for _, tag := range tags {
+			if _, err := rt.Dynamo.History.Queue(tag); err != nil {
+				return fmt.Errorf("error queuing status tag to writer: %w", err)
+			}
 		}
 	}
 
