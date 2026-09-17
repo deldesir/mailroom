@@ -95,6 +95,11 @@ SELECT c.uuid, m.log_uuids
 
 // DeleteChannelLogsForMessages deletes from DynamoDB the channel logs of the given messages
 func DeleteChannelLogsForMessages(ctx context.Context, rt *runtime.Runtime, orgID OrgID, msgUUIDs []events.EventUUID) error {
+	// nanoRP: channel logs are never written to DynamoDB, so there is nothing to delete
+	if !rt.Dynamo.Enabled() {
+		return nil
+	}
+
 	rows, err := rt.DB.QueryContext(ctx, sqlSelectMsgChannelLogs, orgID, pq.Array(msgUUIDs))
 	if err != nil {
 		return fmt.Errorf("error querying channel logs of messages: %w", err)

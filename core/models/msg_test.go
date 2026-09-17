@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nyaruka/gocommon/aws/dynamo"
 	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
 	"github.com/nyaruka/gocommon/i18n"
@@ -188,7 +189,7 @@ func TestNewOutgoingFlowMsg(t *testing.T) {
 
 func TestDeriveMsgFolder(t *testing.T) {
 	const in, out = models.DirectionIn, models.DirectionOut
-	const visible, archived = models.VisibilityVisible, models.VisibilityArchived
+	const visible = models.VisibilityVisible
 	const delUser, delSender = models.VisibilityDeletedByUser, models.VisibilityDeletedBySender
 
 	tcs := []struct {
@@ -200,8 +201,6 @@ func TestDeriveMsgFolder(t *testing.T) {
 	}{
 		{in, models.MsgStatusHandled, visible, false, models.MsgFolderInbox},
 		{in, models.MsgStatusHandled, visible, true, models.MsgFolderHandled},
-		{in, models.MsgStatusHandled, archived, false, models.MsgFolderArchived},
-		{in, models.MsgStatusHandled, archived, true, models.MsgFolderArchived}, // flow is irrelevant once archived
 		{in, models.MsgStatusPending, visible, false, models.MsgFolderPending},
 		{out, models.MsgStatusInitializing, visible, false, models.MsgFolderOutbox},
 		{out, models.MsgStatusQueued, visible, false, models.MsgFolderOutbox},
@@ -218,10 +217,6 @@ func TestDeriveMsgFolder(t *testing.T) {
 		{in, models.MsgStatusPending, delUser, false, models.MsgFolderDeleted},   // deleted whilst still pending
 		{in, models.MsgStatusPending, delSender, false, models.MsgFolderDeleted}, // deleted whilst still pending
 		{out, models.MsgStatusSent, delUser, false, models.MsgFolderDeleted},
-
-		// pending takes precedence over the user facing folders, so an archived message which hasn't been handled
-		// yet is pending rather than archived
-		{in, models.MsgStatusPending, archived, false, models.MsgFolderPending},
 	}
 
 	for i, tc := range tcs {
@@ -232,7 +227,6 @@ func TestDeriveMsgFolder(t *testing.T) {
 	// states which shouldn't exist panic rather than leaving a message in no folder
 	assert.Panics(t, func() { models.DeriveMsgFolder(out, models.MsgStatusHandled, visible, false) })
 	assert.Panics(t, func() { models.DeriveMsgFolder(out, models.MsgStatusPending, visible, false) }) // incoming only status
-	assert.Panics(t, func() { models.DeriveMsgFolder(out, models.MsgStatusSent, archived, false) })
 	assert.Panics(t, func() { models.DeriveMsgFolder(in, models.MsgStatusErrored, visible, false) })
 }
 
@@ -264,6 +258,55 @@ func TestGetMessagesByUUID(t *testing.T) {
 	assert.Equal(t, "in 1", msgs[0].Text())
 }
 
+func TestMarkMessageHandled(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	oa, err := models.GetOrgAssets(ctx, rt, testdb.Org1.ID)
+	require.NoError(t, err)
+
+	flow, err := oa.FlowByID(testdb.Favorites.ID)
+	require.NoError(t, err)
+
+	in1 := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "hi", models.MsgStatusPending, "")
+	in2 := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.TwilioChannel, testdb.Ann, "hi", models.MsgStatusPending, "")
+	in3 := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad9-f0bc-7738-8af8-99712a6f8bff", testdb.TwilioChannel, testdb.Ann, "hi", models.MsgStatusPending, "")
+
+	// a message deleted by the user whilst it was still waiting to be handled, and one deleted by its sender
+	in4 := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bada-2b39-7cac-9714-827df9ec6b91", testdb.TwilioChannel, testdb.Ann, "hi", models.MsgStatusPending, "")
+	rt.DB.MustExec(`UPDATE msgs_msg SET visibility = 'D', folder = 'D', text = '' WHERE id = $1`, in4.ID)
+	in5 := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bb0a-4c2e-7a51-8f3d-1c6b5e9d0a72", testdb.TwilioChannel, testdb.Ann, "hi", models.MsgStatusPending, "")
+	rt.DB.MustExec(`UPDATE msgs_msg SET visibility = 'X', folder = 'D', text = '' WHERE id = $1`, in5.ID)
+
+	// a message handled outside of a flow ends up in the inbox
+	err = models.MarkMessageHandled(ctx, rt.DB, in1.UUID, models.MsgStatusHandled, false, nil, nil, nil, nil)
+	assert.NoError(t, err)
+
+	// one handled by a flow ends up in the handled folder
+	err = models.MarkMessageHandled(ctx, rt.DB, in2.UUID, models.MsgStatusHandled, false, flow, nil, nil, nil)
+	assert.NoError(t, err)
+
+	// and one from a blocked contact or an inactive channel is filed straight into the archived folder
+	err = models.MarkMessageHandled(ctx, rt.DB, in3.UUID, models.MsgStatusHandled, true, nil, nil, nil, nil)
+	assert.NoError(t, err)
+
+	// handling a message deleted whilst it was pending doesn't resurrect it, however it was deleted
+	err = models.MarkMessageHandled(ctx, rt.DB, in4.UUID, models.MsgStatusHandled, false, nil, nil, nil, nil)
+	assert.NoError(t, err)
+	err = models.MarkMessageHandled(ctx, rt.DB, in5.UUID, models.MsgStatusHandled, false, nil, nil, nil, nil)
+	assert.NoError(t, err)
+
+	assertdb.Query(t, rt.DB, `SELECT status, visibility, folder, flow_id FROM msgs_msg WHERE id = $1`, in1.ID).
+		Columns(map[string]any{"status": "H", "visibility": "V", "folder": "I", "flow_id": nil})
+	assertdb.Query(t, rt.DB, `SELECT status, visibility, folder, flow_id FROM msgs_msg WHERE id = $1`, in2.ID).
+		Columns(map[string]any{"status": "H", "visibility": "V", "folder": "W", "flow_id": testdb.Favorites.ID})
+	assertdb.Query(t, rt.DB, `SELECT status, visibility, folder, flow_id FROM msgs_msg WHERE id = $1`, in3.ID).
+		Columns(map[string]any{"status": "H", "visibility": "V", "folder": "A", "flow_id": nil})
+	assertdb.Query(t, rt.DB, `SELECT status, visibility, folder, text FROM msgs_msg WHERE id = $1`, in4.ID).
+		Columns(map[string]any{"status": "P", "visibility": "D", "folder": "D", "text": ""})
+	assertdb.Query(t, rt.DB, `SELECT status, visibility, folder, text FROM msgs_msg WHERE id = $1`, in5.ID).
+		Columns(map[string]any{"status": "P", "visibility": "X", "folder": "D", "text": ""})
+}
+
 func TestResendMessages(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
@@ -283,7 +326,14 @@ func TestResendMessages(t *testing.T) {
 	// failed message with URN which we no longer have a channel for
 	out5 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb96-3c4c-72f2-bacc-4b6ae4c592b3", nil, testdb.Cat, "hi", nil, models.MsgStatusFailed, false)
 	rt.DB.MustExec(`UPDATE msgs_msg SET failed_reason = 'E' WHERE id = $1`, out5.ID)
+
+	// two of the failed messages were left with the retry they had before failing
+	rt.DB.MustExec(`UPDATE msgs_msg SET next_attempt = NOW() WHERE id IN ($1, $2)`, out1.ID, out5.ID)
 	rt.DB.MustExec(`UPDATE contacts_contacturn SET scheme = 'viber', path = '1234', identity = 'viber:1234' WHERE id = $1`, testdb.Cat.URNID)
+
+	// failed message which has since been deleted
+	out6 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb97-6d69-7e33-9f9e-1bd9dbd9f68e", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusFailed, false)
+	rt.DB.MustExec(`UPDATE msgs_msg SET visibility = 'D', folder = 'D', text = '' WHERE id = $1`, out6.ID)
 
 	// other failed message not included in set to resend
 	testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb98-3637-778d-9dfc-0ab85c950d7c", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusFailed, false)
@@ -291,12 +341,12 @@ func TestResendMessages(t *testing.T) {
 	// give Bob's URN an affinity for the Vonage channel
 	rt.DB.MustExec(`UPDATE contacts_contacturn SET channel_id = $1 WHERE id = $2`, testdb.VonageChannel.ID, testdb.Bob.URNID)
 
-	uuids := []events.EventUUID{out1.UUID, out2.UUID, out3.UUID, out4.UUID, out5.UUID}
+	uuids := []events.EventUUID{out1.UUID, out2.UUID, out3.UUID, out4.UUID, out5.UUID, out6.UUID}
 	msgs, err := models.GetMessagesByUUID(ctx, rt.DB, testdb.Org1.ID, models.DirectionOut, uuids)
 	require.NoError(t, err)
 
 	// resend both msgs
-	resent, err := models.PrepareMessagesForResend(ctx, rt, oa, msgs)
+	resent, tags, deletes, err := models.PrepareMessagesForResend(ctx, rt, oa, msgs)
 	require.NoError(t, err)
 
 	assert.Len(t, resent, 3) // only #1, #2 and #3 can be resent
@@ -317,31 +367,107 @@ func TestResendMessages(t *testing.T) {
 		assert.Equal(t, models.MsgStatusQueued, m.Status(), "%d: status mismatch", i)
 	}
 
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'Q' AND folder = 'O' AND sent_on IS NULL`).Returns(3)
+	// and neither the resent nor the re-failed messages are left awaiting a retry
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'Q' AND folder = 'O' AND sent_on IS NULL AND next_attempt IS NULL`).Returns(3)
 
 	assertdb.Query(t, rt.DB, `SELECT status, folder, failed_reason FROM msgs_msg WHERE id = $1`, out4.ID).Columns(map[string]any{"status": "F", "folder": "X", "failed_reason": "D"})
 	assertdb.Query(t, rt.DB, `SELECT status, folder, failed_reason FROM msgs_msg WHERE id = $1`, out5.ID).Columns(map[string]any{"status": "F", "folder": "X", "failed_reason": "D"})
+
+	// the deleted message is left in the deleted folder rather than being resurrected
+	assertdb.Query(t, rt.DB, `SELECT status, folder, visibility FROM msgs_msg WHERE id = $1`, out6.ID).Columns(map[string]any{"status": "F", "folder": "D", "visibility": "D"})
+
+	// the messages which failed again are tagged as such in their contacts' history, but not the deleted one
+	byMsg := make(map[events.EventUUID]*models.EventTag, len(tags))
+	for _, tag := range tags {
+		byMsg[tag.EventUUID] = tag
+	}
+	assert.ElementsMatch(t, []events.EventUUID{out4.UUID, out5.UUID}, slices.Collect(maps.Keys(byMsg)))
+
+	if assert.Contains(t, byMsg, events.EventUUID(out5.UUID)) {
+		tag := byMsg[out5.UUID]
+		assert.Equal(t, testdb.Org1.ID, tag.OrgID)
+		assert.Equal(t, testdb.Cat.UUID, tag.ContactUUID)
+		assert.Equal(t, "sts", tag.Tag)
+		assert.Equal(t, "F", tag.Qualifier)
+		assert.Equal(t, "failed", tag.Data["status"])
+		assert.Equal(t, "no_destination", tag.Data["reason"])
+		assert.Nil(t, tag.TTL)
+	}
+
+	// and the messages being resent have the failed and errored items from their previous attempt deleted
+	assert.ElementsMatch(t, []dynamo.Key{
+		{PK: "con#" + string(testdb.Ann.UUID), SK: "evt#" + string(out1.UUID) + "#sts#F"},
+		{PK: "con#" + string(testdb.Ann.UUID), SK: "evt#" + string(out1.UUID) + "#sts#E"},
+		{PK: "con#" + string(testdb.Bob.UUID), SK: "evt#" + string(out2.UUID) + "#sts#F"},
+		{PK: "con#" + string(testdb.Bob.UUID), SK: "evt#" + string(out2.UUID) + "#sts#E"},
+		{PK: "con#" + string(testdb.Ann.UUID), SK: "evt#" + string(out3.UUID) + "#sts#F"},
+		{PK: "con#" + string(testdb.Ann.UUID), SK: "evt#" + string(out3.UUID) + "#sts#E"},
+	}, deletes)
 }
 
 func TestFailMessages(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusQueued, false)
-	testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.TwilioChannel, testdb.Bob, "hi", nil, models.MsgStatusErrored, false)
+	out1 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusQueued, false)
+	out2 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.TwilioChannel, testdb.Bob, "hi", nil, models.MsgStatusErrored, false)
+	rt.DB.MustExec(`UPDATE msgs_msg SET next_attempt = NOW() WHERE id = $1`, out2.ID) // awaiting a retry
 	out3 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb93-ec0f-703e-9b5b-d26d4b6b133c", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusFailed, false)
-	testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb94-1134-75d6-91dc-8aee7787f703", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusQueued, false)
-	testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb96-3c4c-72f2-bacc-4b6ae4c592b3", testdb.TwilioChannel, testdb.Cat, "hi", nil, models.MsgStatusQueued, false)
+	out4 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb94-1134-75d6-91dc-8aee7787f703", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusQueued, false)
+	out5 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb96-3c4c-72f2-bacc-4b6ae4c592b3", testdb.TwilioChannel, testdb.Cat, "hi", nil, models.MsgStatusQueued, false)
+
+	// a message which never made it into courier's queue
+	out6 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb97-6d69-7e33-9f9e-1bd9dbd9f68e", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusInitializing, false)
+
+	// and one which has since been deleted
+	out7 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb98-3637-778d-9dfc-0ab85c950d7c", testdb.TwilioChannel, testdb.Ann, "hi", nil, models.MsgStatusQueued, false)
+	rt.DB.MustExec(`UPDATE msgs_msg SET visibility = 'D', folder = 'D', text = '' WHERE id = $1`, out7.ID)
 
 	now := dates.Now()
 
-	// fail the msgs
-	err := models.FailChannelMessages(ctx, rt.DB.DB, testdb.Org1.ID, testdb.TwilioChannel.ID, models.MsgFailedChannelRemoved)
+	// messages are failed in batches of the given size
+	tags1, err := models.FailChannelMessages(ctx, rt.DB, testdb.Org1.ID, testdb.TwilioChannel.ID, models.MsgFailedChannelRemoved, 3)
 	require.NoError(t, err)
+	assert.Len(t, tags1, 3)
 
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'F' AND modified_on > $1`, now).Returns(4)
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'F' AND failed_reason = 'R' AND modified_on > $1`, now).Returns(4)
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE folder = 'X'`).Returns(5) // including the already failed one
+	tags2, err := models.FailChannelMessages(ctx, rt.DB, testdb.Org1.ID, testdb.TwilioChannel.ID, models.MsgFailedChannelRemoved, 3)
+	require.NoError(t, err)
+	assert.Len(t, tags2, 2)
+
+	// and then there's nothing left to fail
+	tags3, err := models.FailChannelMessages(ctx, rt.DB, testdb.Org1.ID, testdb.TwilioChannel.ID, models.MsgFailedChannelRemoved, 3)
+	require.NoError(t, err)
+	assert.Len(t, tags3, 0)
+
+	tags := append(tags1, tags2...)
+
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'F' AND modified_on > $1`, now).Returns(5)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'F' AND failed_reason = 'R' AND modified_on > $1`, now).Returns(5)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE folder = 'X'`).Returns(6) // including the already failed one
 	assertdb.Query(t, rt.DB, `SELECT status, failed_reason FROM msgs_msg WHERE id = $1`, out3.ID).Columns(map[string]any{"status": "F", "failed_reason": nil})
+
+	// the message that never reached courier is failed too
+	assertdb.Query(t, rt.DB, `SELECT status, folder FROM msgs_msg WHERE id = $1`, out6.ID).Columns(map[string]any{"status": "F", "folder": "X"})
+
+	// but the deleted one is left alone
+	assertdb.Query(t, rt.DB, `SELECT status, folder FROM msgs_msg WHERE id = $1`, out7.ID).Columns(map[string]any{"status": "Q", "folder": "D"})
+
+	// each failure is tagged against the message's own event, for the message's contact
+	byMsg := make(map[events.EventUUID]*models.EventTag, len(tags))
+	for _, tag := range tags {
+		byMsg[tag.EventUUID] = tag
+	}
+	assert.ElementsMatch(t, []events.EventUUID{out1.UUID, out2.UUID, out4.UUID, out5.UUID, out6.UUID}, slices.Collect(maps.Keys(byMsg)))
+
+	if assert.Contains(t, byMsg, events.EventUUID(out2.UUID)) {
+		tag := byMsg[out2.UUID]
+		assert.Equal(t, testdb.Org1.ID, tag.OrgID)
+		assert.Equal(t, testdb.Bob.UUID, tag.ContactUUID)
+		assert.Equal(t, "sts", tag.Tag)
+		assert.Equal(t, "F", tag.Qualifier)
+		assert.Equal(t, "failed", tag.Data["status"])
+		assert.Equal(t, "channel_removed", tag.Data["reason"])
+		assert.Nil(t, tag.TTL)
+	}
 }
 
 func TestFailOldAndroidMessages(t *testing.T) {
@@ -354,6 +480,7 @@ func TestFailOldAndroidMessages(t *testing.T) {
 	out1 := testdb.InsertOutgoingMsgCreatedOn(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.AndroidChannel, testdb.Ann, "hi", models.MsgStatusInitializing, fortnightAgo)
 	out2 := testdb.InsertOutgoingMsgCreatedOn(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.AndroidChannel, testdb.Bob, "hi", models.MsgStatusQueued, fortnightAgo)
 	out3 := testdb.InsertOutgoingMsgCreatedOn(t, rt, testdb.Org1, "0199bb93-ec0f-703e-9b5b-d26d4b6b133c", testdb.AndroidChannel, testdb.Cat, "hi", models.MsgStatusErrored, fortnightAgo)
+	rt.DB.MustExec(`UPDATE msgs_msg SET next_attempt = NOW() WHERE id = $1`, out3.ID) // awaiting a retry
 
 	// an equally old android message that already reached the channel, and one that already failed
 	out4 := testdb.InsertOutgoingMsgCreatedOn(t, rt, testdb.Org1, "0199bb94-1134-75d6-91dc-8aee7787f703", testdb.AndroidChannel, testdb.Ann, "hi", models.MsgStatusWired, fortnightAgo)
@@ -368,6 +495,10 @@ func TestFailOldAndroidMessages(t *testing.T) {
 
 	// and one that's only a day old so its relayer may yet sync
 	out8 := testdb.InsertOutgoingMsgCreatedOn(t, rt, testdb.Org1, "0199bb99-d64d-7bb1-9a1e-9d3c4f6ae3c1", testdb.AndroidChannel, testdb.Ann, "hi", models.MsgStatusQueued, yesterday)
+
+	// a stale android message which has since been deleted
+	out9 := testdb.InsertOutgoingMsgCreatedOn(t, rt, testdb.Org1, "0199bb9a-8a56-7c48-b1e8-6a5f0d1c8b47", testdb.AndroidChannel, testdb.Ann, "hi", models.MsgStatusQueued, fortnightAgo)
+	rt.DB.MustExec(`UPDATE msgs_msg SET visibility = 'D', folder = 'D', text = '' WHERE id = $1`, out9.ID)
 
 	olderThan := time.Now().Add(-7 * 24 * time.Hour)
 
@@ -397,14 +528,16 @@ func TestFailOldAndroidMessages(t *testing.T) {
 		assert.Equal(t, testdb.Org2.ID, tag.OrgID)
 		assert.Equal(t, testdb.Org2Contact.UUID, tag.ContactUUID)
 		assert.Equal(t, "sts", tag.Tag)
+		assert.Equal(t, "F", tag.Qualifier)
 		assert.Equal(t, "failed", tag.Data["status"])
 		assert.Equal(t, "too_old", tag.Data["reason"])
+		assert.Nil(t, tag.TTL)
 	}
 
 	// the stale outbox messages are now failed and moved to the failed folder
 	for _, m := range []*testdb.MsgOut{out1, out2, out3, out7} {
-		assertdb.Query(t, rt.DB, `SELECT status, folder, failed_reason FROM msgs_msg WHERE id = $1`, m.ID).
-			Columns(map[string]any{"status": "F", "folder": "X", "failed_reason": "O"})
+		assertdb.Query(t, rt.DB, `SELECT status, folder, failed_reason, next_attempt FROM msgs_msg WHERE id = $1`, m.ID).
+			Columns(map[string]any{"status": "F", "folder": "X", "failed_reason": "O", "next_attempt": nil})
 	}
 
 	// but nothing else was touched
@@ -416,6 +549,8 @@ func TestFailOldAndroidMessages(t *testing.T) {
 		Columns(map[string]any{"status": "Q", "folder": "O", "failed_reason": nil})
 	assertdb.Query(t, rt.DB, `SELECT status, folder, failed_reason FROM msgs_msg WHERE id = $1`, out8.ID).
 		Columns(map[string]any{"status": "Q", "folder": "O", "failed_reason": nil})
+	assertdb.Query(t, rt.DB, `SELECT status, folder, failed_reason FROM msgs_msg WHERE id = $1`, out9.ID).
+		Columns(map[string]any{"status": "Q", "folder": "D", "failed_reason": nil})
 }
 
 func TestUpdateAndroidMessageStatuses(t *testing.T) {
@@ -429,6 +564,7 @@ func TestUpdateAndroidMessageStatuses(t *testing.T) {
 	out2 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.AndroidChannel, testdb.Bob, "hi", nil, models.MsgStatusQueued, false)
 	out3 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bad9-f0bc-7738-8af8-99712a6f8bff", testdb.AndroidChannel, testdb.Cat, "hi", nil, models.MsgStatusQueued, false)
 	out4 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bada-2b39-7cac-9714-827df9ec6b91", testdb.AndroidChannel, testdb.Ann, "hi", nil, models.MsgStatusQueued, false)
+	rt.DB.MustExec(`UPDATE msgs_msg SET next_attempt = NOW() WHERE id = $1`, out2.ID) // awaiting a retry
 
 	// a message which already has a sent_on, and one which is incoming
 	out5 := testdb.InsertOutgoingMsg(t, rt, testdb.Org1, "0199bb09-f0e9-7489-a58e-69304a7941a0", testdb.AndroidChannel, testdb.Ann, "hi", nil, models.MsgStatusSent, false)
@@ -460,8 +596,8 @@ func TestUpdateAndroidMessageStatuses(t *testing.T) {
 	// errored messages stay in the outbox, and only the messages we could update are tagged
 	assertdb.Query(t, rt.DB, `SELECT status, folder, sent_on FROM msgs_msg WHERE id = $1`, out1.ID).
 		Columns(map[string]any{"status": "E", "folder": "O", "sent_on": nil})
-	assertdb.Query(t, rt.DB, `SELECT status, folder, sent_on FROM msgs_msg WHERE id = $1`, out2.ID).
-		Columns(map[string]any{"status": "F", "folder": "X", "sent_on": nil})
+	assertdb.Query(t, rt.DB, `SELECT status, folder, sent_on, next_attempt FROM msgs_msg WHERE id = $1`, out2.ID).
+		Columns(map[string]any{"status": "F", "folder": "X", "sent_on": nil, "next_attempt": nil})
 	assertdb.Query(t, rt.DB, `SELECT status, folder, sent_on FROM msgs_msg WHERE id = $1`, out3.ID).
 		Columns(map[string]any{"status": "S", "folder": "S", "sent_on": sentOn})
 
@@ -488,8 +624,21 @@ func TestUpdateAndroidMessageStatuses(t *testing.T) {
 		assert.Equal(t, testdb.Org1.ID, tag.OrgID)
 		assert.Equal(t, testdb.Bob.UUID, tag.ContactUUID)
 		assert.Equal(t, "sts", tag.Tag)
+		assert.Equal(t, "F", tag.Qualifier)
 		assert.Equal(t, "failed", tag.Data["status"])
 		assert.NotContains(t, tag.Data, "reason")
+		assert.Nil(t, tag.TTL)
+	}
+
+	// each status the relayer reports is tagged as its own item, and non-terminal ones expire
+	if assert.Contains(t, byMsg, events.EventUUID(out3.UUID)) {
+		tag := byMsg[out3.UUID]
+		assert.Equal(t, "sts", tag.Tag)
+		assert.Equal(t, "S", tag.Qualifier)
+		assert.Equal(t, "sent", tag.Data["status"])
+		if assert.NotNil(t, tag.TTL) {
+			assert.Equal(t, tag.Data["created_on"].(time.Time).Add(90*24*time.Hour), *tag.TTL)
+		}
 	}
 
 	// nothing to do is not an error
@@ -537,6 +686,24 @@ func TestGetAndroidOutbox(t *testing.T) {
 	assert.Len(t, msgs, 2)
 }
 
+func TestUpdateMessagesModifiedOn(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	msg1 := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "hi", models.MsgStatusHandled, "")
+	msg2 := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad9-9791-770d-a47d-8f4a6ea3ad13", testdb.TwilioChannel, testdb.Ann, "hello", models.MsgStatusHandled, "")
+	rt.DB.MustExec(`UPDATE msgs_msg SET modified_on = '2020-01-01 00:00:00+00'`)
+
+	err := models.UpdateMessagesModifiedOn(ctx, rt.DB, []models.MsgID{msg1.ID})
+	require.NoError(t, err)
+
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE id = $1 AND modified_on > '2021-01-01'`, msg1.ID).Returns(1)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE id = $1 AND modified_on > '2021-01-01'`, msg2.ID).Returns(0)
+
+	// empty list is a noop
+	err = models.UpdateMessagesModifiedOn(ctx, rt.DB, nil)
+	require.NoError(t, err)
+}
+
 func TestArchiveAndRestoreMessages(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
@@ -552,33 +719,41 @@ func TestArchiveAndRestoreMessages(t *testing.T) {
 		require.NoError(t, err)
 		return msgs
 	}
+	assertFolder := func(m *testdb.MsgIn, visibility, folder string) {
+		t.Helper()
+		assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, m.ID).
+			Columns(map[string]any{"visibility": visibility, "folder": folder})
+	}
 
 	err := models.ArchiveMessages(ctx, rt.DB, load(in1.UUID, in2.UUID, in3.UUID))
 	assert.NoError(t, err)
 
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in1.ID).Columns(map[string]any{"visibility": "A", "folder": "A"})
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in2.ID).Columns(map[string]any{"visibility": "A", "folder": "A"})
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in3.ID).Columns(map[string]any{"visibility": "A", "folder": "P"})
+	// archiving moves a message out of the inbox or the handled folder and leaves its visibility alone
+	assertFolder(in1, "V", "A")
+	assertFolder(in2, "V", "A")
+
+	// but a message that hasn't been handled yet isn't in either of those folders so archiving it is a noop
+	assertFolder(in3, "V", "P")
 
 	// archiving again is a noop
 	err = models.ArchiveMessages(ctx, rt.DB, load(in1.UUID))
 	assert.NoError(t, err)
 
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in1.ID).Columns(map[string]any{"visibility": "A", "folder": "A"})
+	assertFolder(in1, "V", "A")
 
-	// restoring puts each message back in the folder it came from
+	// restoring puts each message back in the folder its state implies
 	err = models.RestoreMessages(ctx, rt.DB, load(in1.UUID, in2.UUID, in3.UUID))
 	assert.NoError(t, err)
 
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in1.ID).Columns(map[string]any{"visibility": "V", "folder": "I"})
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in2.ID).Columns(map[string]any{"visibility": "V", "folder": "W"})
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in3.ID).Columns(map[string]any{"visibility": "V", "folder": "P"})
+	assertFolder(in1, "V", "I")
+	assertFolder(in2, "V", "W")
+	assertFolder(in3, "V", "P")
 
 	// restoring a message that isn't archived is a noop
 	err = models.RestoreMessages(ctx, rt.DB, load(in1.UUID))
 	assert.NoError(t, err)
 
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in1.ID).Columns(map[string]any{"visibility": "V", "folder": "I"})
+	assertFolder(in1, "V", "I")
 
 	// a message deleted after being loaded but before being updated stays deleted
 	loaded := load(in2.UUID)
@@ -587,7 +762,8 @@ func TestArchiveAndRestoreMessages(t *testing.T) {
 	err = models.ArchiveMessages(ctx, rt.DB, loaded)
 	assert.NoError(t, err)
 
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder, text FROM msgs_msg WHERE id = $1`, in2.ID).Columns(map[string]any{"visibility": "D", "folder": "D", "text": ""})
+	assertdb.Query(t, rt.DB, `SELECT visibility, folder, text FROM msgs_msg WHERE id = $1`, in2.ID).
+		Columns(map[string]any{"visibility": "D", "folder": "D", "text": ""})
 
 	// deleted messages can't be archived
 	rt.DB.MustExec(`UPDATE msgs_msg SET visibility = 'D', folder = 'D' WHERE id = $1`, in1.ID)
@@ -595,7 +771,16 @@ func TestArchiveAndRestoreMessages(t *testing.T) {
 	err = models.ArchiveMessages(ctx, rt.DB, load(in1.UUID))
 	assert.NoError(t, err)
 
-	assertdb.Query(t, rt.DB, `SELECT visibility, folder FROM msgs_msg WHERE id = $1`, in1.ID).Columns(map[string]any{"visibility": "D", "folder": "D"})
+	assertFolder(in1, "D", "D")
+
+	// nor can a deleted message whose folder is stale with respect to its visibility, as rows predating the folder
+	// column can be - the visibility is what records the deletion
+	rt.DB.MustExec(`UPDATE msgs_msg SET visibility = 'D', folder = 'W', text = '' WHERE id = $1`, in2.ID)
+
+	err = models.ArchiveMessages(ctx, rt.DB, load(in2.UUID))
+	assert.NoError(t, err)
+
+	assertFolder(in2, "D", "W")
 }
 
 func TestDeleteMessages(t *testing.T) {
@@ -712,7 +897,7 @@ func TestMarkMessages(t *testing.T) {
 
 	models.MarkMessagesForRequeuing(ctx, rt.DB, []*models.Msg{msg1, msg2})
 
-	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'I'`).Returns(2)
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE status = 'I' AND next_attempt IS NOT NULL`).Returns(2)
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE folder = 'O'`).Returns(3) // all still in outbox
 
 	// try running on database with BIGINT message ids

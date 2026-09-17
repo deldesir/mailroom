@@ -9,13 +9,17 @@ import (
 	"os"
 
 	"github.com/go-playground/validator/v10"
-	"github.com/nyaruka/ezconf"
 	"github.com/nyaruka/gocommon/httpx"
 	"github.com/nyaruka/goflow/utils"
 )
 
 func init() {
 	utils.RegisterValidatorAlias("session_storage", "eq=db|eq=s3", func(e validator.FieldError) string { return "is not a valid session storage mode" })
+
+	// valkey:// is plaintext, valkeys:// is TLS - both are accepted, redis:// isn't, as our config surface is Valkey named
+	utils.RegisterValidatorAlias("valkey_url", "startswith=valkey:|startswith=valkeys:", func(e validator.FieldError) string {
+		return "must start with 'valkey:' or 'valkeys:'"
+	})
 }
 
 // Config is our top level configuration object
@@ -23,7 +27,7 @@ type Config struct {
 	DB         string `validate:"url,startswith=postgres:"           help:"URL for your Postgres database"`
 	ReadonlyDB string `validate:"omitempty,url,startswith=postgres:" help:"URL of optional connection to readonly database instance"`
 	DBPoolSize int    `                                              help:"the size of our db pool"`
-	Valkey     string `validate:"url,startswith=valkey:"             help:"URL for your Valkey instance"`
+	Valkey     string `validate:"url,valkey_url"                     help:"URL for your Valkey instance, valkeys:// for TLS"`
 
 	InternetAddress  string `help:"the address to bind our internet facing web server to, empty means all interfaces"`
 	InternetPort     int    `help:"the port to bind our internet facing web server to"`
@@ -38,6 +42,8 @@ type Config struct {
 	WorkersBatch     int     `help:"the number of workers for the batch task queue (set to 0 to disable processing of batch tasks on this node)"`
 	WorkersThrottled int     `help:"the number of workers for the throttled task queue (set to 0 to disable processing of throttled tasks on this node)"`
 	WorkerOwnerLimit float64 `help:"the maximum number of workers, across nodes, available to a single owner, as a fraction of the per node worker counts"`
+
+	DefaultContactLimit int `help:"the maximum number of contacts a workspace can have, when not set on the workspace itself, zero means no limit"`
 
 	WebhooksTimeout              int      `help:"the timeout in milliseconds for webhook calls from engine"`
 	WebhooksMaxRetries           int      `help:"the number of times to retry a failed webhook call"`
@@ -125,6 +131,8 @@ func NewDefaultConfig() *Config {
 		WorkersThrottled: 8,
 		WorkerOwnerLimit: 0.5,
 
+		DefaultContactLimit: 10_000_000,
+
 		WebhooksTimeout:              15000,
 		WebhooksMaxBodyBytes:         256 * 1024, // 256 KiB
 		WebhooksHealthyResponseLimit: 10000,
@@ -173,24 +181,10 @@ func NewDefaultConfig() *Config {
 	return conf
 }
 
-// LoadConfig loads configuration from a config file, environment variables and command line args, on top of the
-// given base config, e.g. NewDefaultConfig().
-func LoadConfig(c *Config, args ...string) (*Config, error) {
-	loader := ezconf.NewLoader(c, "mailroom", "Mailroom - handler for RapidPro", []string{"mailroom.toml"})
-	if len(args) > 0 { // allow tests to pass in args
-		loader.SetArgs(args...)
-	}
-	if err := loader.Load(); err != nil {
-		return nil, fmt.Errorf("error loading configuration: %w", err)
-	}
-
-	if err := c.Parse(); err != nil {
-		return nil, err
-	}
-
-	return c, nil
-}
-
+// Parse validates the config and fills in the values which can't be used in the form they're configured in. It's
+// called by cmd.LoadConfig, and a config built by other means (e.g. NewDefaultConfig in a test) must be parsed before
+// being handed to NewRuntime - the values it fills in have no meaningful zero value, so skipping it would silently
+// leave the SSRF blocklist empty rather than fail.
 func (c *Config) Parse() error {
 	// ensure config is valid
 	if err := utils.Validate(c); err != nil {
