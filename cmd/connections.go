@@ -63,7 +63,7 @@ func testConnections(ctx context.Context, rt *runtime.Runtime) error {
 	}
 
 	// test Elasticsearch (optional in nanoRP mode)
-	if rt.ES.Client != nil {
+	if rt.ES.Enabled() {
 		if ping, err := rt.ES.Client.Ping().Do(ctx); err != nil {
 			log.Error("elasticsearch not available", "error", err)
 		} else if !ping {

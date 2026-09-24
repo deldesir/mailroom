@@ -36,7 +36,7 @@ func (h *indexMessages) Execute(ctx context.Context, rt *runtime.Runtime, oa *mo
 
 			slog.Debug("indexing message to elasticsearch", "uuid", msg.UUID, "contact", msg.ContactUUID)
 
-			if rt.ES.Writer != nil {
+			if rt.ES.Enabled() {
 				rt.ES.Writer.Queue(&elastic.Document{
 					Index:   msg.IndexName(rt.Config.ElasticMessagesIndex),
 					ID:      string(msg.UUID),
