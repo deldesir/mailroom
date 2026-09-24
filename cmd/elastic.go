@@ -52,6 +52,12 @@ func Elastic(cfg *runtime.Config) error {
 		return err
 	}
 
+	// with Elasticsearch switched off (see runtime.ServiceOff) there are no indexes, and the runtime has no writer
+	// or client to manage them with
+	if cfg.ElasticEndpoint == "" {
+		return errors.New("elasticsearch is switched off, there are no indexes to manage")
+	}
+
 	// only output ERROR logs
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -224,6 +225,10 @@ type PruneCounts struct {
 // totals after each scanned batch.
 func PruneContacts(ctx context.Context, rt *runtime.Runtime, del bool, progress func(PruneCounts)) (PruneCounts, error) {
 	counts := PruneCounts{}
+
+	if !rt.ES.Enabled() {
+		return counts, errors.New("elasticsearch is switched off, there is no index to prune")
+	}
 
 	pit, err := rt.ES.Client.OpenPointInTime(rt.Config.ElasticContactsIndex).KeepAlive("1m").Do(ctx)
 	if err != nil {

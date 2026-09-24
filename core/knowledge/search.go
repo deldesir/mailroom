@@ -49,6 +49,10 @@ ORDER BY c.embedding <=> $2::vector
 // the closest chunks by cosine distance. Filtering here rather than in the caller means a search of one source isn't
 // crowded out of its limit by chunks from the org's others.
 func Search(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, query string, sources []models.KnowledgeSourceUUID, limit int) ([]*SearchResult, error) {
+	if rt.Embeddings == nil {
+		return nil, ErrNoEmbeddings
+	}
+
 	// clamped here rather than only at the HTTP edge because this primitive is also called directly from Go, and will
 	// eventually back an LLM tool where the limit can be model-influenced
 	if limit <= 0 {

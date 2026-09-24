@@ -23,10 +23,18 @@ var IndexableTypes = []models.KnowledgeSourceType{models.KnowledgeSourceTypeShor
 // again by the next run for this source, and re-reading means re-embedding.
 const watermarkMargin = 5 * time.Second
 
+// ErrNoEmbeddings is returned when there's no embeddings service to index or search with - it's optional (see
+// runtime.ServiceOff) and a deployment without one has no knowledge base
+var ErrNoEmbeddings = errors.New("embeddings service is not configured")
+
 // IndexSource indexes the given knowledge source - re-reading its changed content, chunking and embedding it, and
 // replacing the affected chunks. On success the source is left ready with its counters updated. On error the caller
 // is responsible for marking the source as failed - there is no task retry so that must always land in the database.
 func IndexSource(ctx context.Context, rt *runtime.Runtime, k *models.KnowledgeSource) error {
+	if rt.Embeddings == nil {
+		return ErrNoEmbeddings
+	}
+
 	switch k.Type {
 	case models.KnowledgeSourceTypeShortcuts:
 		return indexAuthored(ctx, rt, k, shortcutsSource)
