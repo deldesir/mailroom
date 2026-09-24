@@ -22,6 +22,13 @@ const (
 	configAPIKey = "api_key"
 )
 
+// models which think by default but accept thinking being disabled. Later models don't allow disabling thinking
+// at all and earlier models don't think unless asked to.
+var thinksByDefault = map[string]bool{
+	"claude-opus-5":   true,
+	"claude-sonnet-5": true,
+}
+
 func init() {
 	models.RegisterLLMService(TypeAnthropic, New)
 }
@@ -32,7 +39,7 @@ type service struct {
 	model  string
 }
 
-func New(rt *runtime.Runtime, m *models.LLM, c *http.Client) (flows.LLMService, error) {
+func New(rt *runtime.Runtime, m *models.LLM, c *http.Client) (flows.ModelService, error) {
 	apiKey := m.Config().GetString(configAPIKey, "")
 	if apiKey == "" {
 		return nil, fmt.Errorf("config incomplete for LLM: %s", m.UUID())
@@ -44,8 +51,8 @@ func New(rt *runtime.Runtime, m *models.LLM, c *http.Client) (flows.LLMService, 
 	}, nil
 }
 
-func (s *service) Response(ctx context.Context, instructions, input string, maxTokens int) (*core.LLMResponse, error) {
-	resp, err := s.client.Messages.New(ctx, anthropic.MessageNewParams{
+func (s *service) Response(ctx context.Context, instructions, input string, maxTokens int) (*core.ModelResponse, error) {
+	params := anthropic.MessageNewParams{
 		Model:  anthropic.Model(s.model),
 		System: []anthropic.TextBlockParam{{Text: instructions}},
 		Messages: []anthropic.MessageParam{
@@ -59,7 +66,14 @@ func (s *service) Response(ctx context.Context, instructions, input string, maxT
 			},
 		},
 		MaxTokens: int64(maxTokens),
-	})
+	}
+
+	// thinking adds latency and its tokens count against MaxTokens, which can truncate what are short responses
+	if thinksByDefault[s.model] {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
+	}
+
+	resp, err := s.client.Messages.New(ctx, params)
 	if err != nil {
 		return nil, s.error(err, instructions, input)
 	}
@@ -71,11 +85,21 @@ func (s *service) Response(ctx context.Context, instructions, input string, maxT
 		}
 	}
 
-	return &core.LLMResponse{
+	return &core.ModelResponse{
 		Output:       s.cleanOutput(output.String()),
 		TokensInput:  resp.Usage.InputTokens,
 		TokensOutput: resp.Usage.OutputTokens,
 	}, nil
+}
+
+// Classify prompts the model, and as the API doesn't provide logprobs, the confidence is approximated.
+func (s *service) Classify(ctx context.Context, input string, options []*core.ClassifierOption) (*core.Classification, error) {
+	resp, err := s.Response(ctx, ai.ClassifyInstructions(options), input, ai.ClassifyMaxTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	return ai.NewClassification(resp, nil, options)
 }
 
 func (s *service) error(err error, instructions, input string) error {
