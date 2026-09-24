@@ -54,7 +54,9 @@ type MessageResult struct {
 // SearchMessages searches the Elasticsearch messages index for messages matching the given text in the given org,
 // then fetches the corresponding events from DynamoDB.
 func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID core.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
-	if !rt.ES.Enabled() {
+	// the index only says which messages match - the events come from DynamoDB - so the search runs in Postgres when
+	// either is switched off (see runtime.ServiceOff)
+	if !rt.ES.Enabled() || !rt.Dynamo.Enabled() {
 		return SearchMessagesPostgres(ctx, rt, orgID, text, contactUUID, inTicket, limit)
 	}
 
@@ -123,18 +125,16 @@ func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID
 		}
 	}
 
-	// batch fetch events from DynamoDB (skipped in nanoRP — Dynamo disabled)
-	itemsBySK := make(map[string]*dynamo.Item)
-	if rt.Dynamo.Enabled() {
-		items, _, err := dynamo.BatchGetItem(ctx, rt.Dynamo.History.Client(), rt.Dynamo.History.Table(), keys)
-		if err != nil {
-			return nil, fmt.Errorf("error fetching events from DynamoDB: %w", err)
-		}
+	// batch fetch events from DynamoDB
+	items, _, err := dynamo.BatchGetItem(ctx, rt.Dynamo.History.Client(), rt.Dynamo.History.Table(), keys)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching events from DynamoDB: %w", err)
+	}
 
-		// index items by SK for ordered lookup
-		for _, item := range items {
-			itemsBySK[item.SK] = item
-		}
+	// index items by SK for ordered lookup
+	itemsBySK := make(map[string]*dynamo.Item, len(items))
+	for _, item := range items {
+		itemsBySK[item.SK] = item
 	}
 
 	// build results in Elasticsearch relevance order, skipping any not found in DynamoDB

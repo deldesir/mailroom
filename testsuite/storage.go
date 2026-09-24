@@ -70,6 +70,10 @@ func isNoSuchBucket(err error) bool {
 func clearStorage(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
+	if rt.S3 == nil {
+		return // switched off (see NanoRP): nothing to do
+	}
+
 	err := rt.S3.EmptyBucket(t.Context(), rt.Config.S3AttachmentsBucket)
 	require.NoError(t, err)
 }

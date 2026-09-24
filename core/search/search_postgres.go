@@ -118,11 +118,13 @@ func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, o
 	baseArgs := conv.Args()
 
 	type row struct {
-		ID   models.ContactID `db:"id"`
+		ID   int64            `db:"id"`
 		UUID core.ContactUUID `db:"uuid"`
 	}
 
-	afterID := models.ContactID(0)
+	// the keyset cursor is a plain integer rather than a ContactID, whose zero value binds as NULL - and c.id > NULL
+	// would make the first batch, and so the whole result, empty
+	afterID := int64(0)
 
 	for {
 		size := batchSize
@@ -154,10 +156,11 @@ func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, o
 
 // SearchMessagesPostgres searches messages in the given org for the given text and returns them as msg_received and
 // msg_created events, the same shape the Elastic search reads back from DynamoDB. Matching is on whole words, all
-// of which must be present, using the text_search tsvector column that the nanoRP database migration adds.
+// of which must be present, using the text_search tsvector column that the nanorp_indexes command adds. The messages
+// searched are those the indexer would have indexed: not deleted, and from contacts who have been seen.
 func SearchMessagesPostgres(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID core.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
 	args := []any{orgID, text}
-	clauses := []string{"m.org_id = $1", "m.text_search @@ plainto_tsquery('simple', $2)", "m.visibility = 'V'"}
+	clauses := []string{"m.org_id = $1", "m.text_search @@ plainto_tsquery('simple', $2)", "m.visibility NOT IN ('D', 'X')", "c.last_seen_on IS NOT NULL"}
 
 	// as with Elastic, searching by contact sorts purely by recency, otherwise by relevance then recency, and a search
 	// across the org only looks back 180 days

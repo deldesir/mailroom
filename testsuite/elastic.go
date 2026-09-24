@@ -99,6 +99,10 @@ func sweepStaleElastic(ctx context.Context, rt *runtime.Runtime) error {
 func ClearElastic(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
+	if !rt.ES.Enabled() {
+		return // switched off (see NanoRP): nothing to do
+	}
+
 	rt.ES.Writer.Flush()
 
 	// refresh so that recently written documents are visible to the delete query
@@ -114,6 +118,10 @@ func ClearElastic(t *testing.T, rt *runtime.Runtime) {
 func IndexContacts(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
+	if !rt.ES.Enabled() {
+		return // switched off (see NanoRP): nothing to do
+	}
+
 	clearElasticContacts(t, rt)
 
 	indexOrgContacts(t, rt, testdb.Org1)
@@ -125,6 +133,10 @@ func IndexContacts(t *testing.T, rt *runtime.Runtime) {
 // IndexContacts clears the contacts index.
 func IndexMessages(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
+
+	if !rt.ES.Enabled() {
+		return // switched off (see NanoRP): nothing to do
+	}
 
 	clearElasticMessages(t, rt)
 
@@ -182,6 +194,10 @@ func IndexMessages(t *testing.T, rt *runtime.Runtime) {
 // WriteMessageHistory writes the corresponding DynamoDB history events for all indexable messages in the database.
 func WriteMessageHistory(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
+
+	if !rt.Dynamo.Enabled() {
+		return // switched off (see NanoRP): nothing to do
+	}
 
 	ctx := t.Context()
 
@@ -247,6 +263,10 @@ type IndexedMessage struct {
 func GetIndexedMessages(t *testing.T, rt *runtime.Runtime, clear bool) []IndexedMessage {
 	t.Helper()
 
+	if !rt.ES.Enabled() {
+		t.Skip("asserts on the Elasticsearch messages index, which is switched off (see NanoRP)")
+	}
+
 	rt.ES.Writer.Flush()
 
 	pattern := rt.Config.ElasticMessagesIndex + "-*"
@@ -292,6 +312,10 @@ func GetIndexedMessages(t *testing.T, rt *runtime.Runtime, clear bool) []Indexed
 func WaitForIndexedMessages(t *testing.T, rt *runtime.Runtime, count int) []IndexedMessage {
 	t.Helper()
 
+	if !rt.ES.Enabled() {
+		t.Skip("asserts on the Elasticsearch messages index, which is switched off (see NanoRP)")
+	}
+
 	const timeout = 10 * time.Second
 	const interval = 50 * time.Millisecond
 
@@ -320,6 +344,10 @@ type SearchAssertion struct {
 func clearElasticContacts(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
+	if !rt.ES.Enabled() {
+		return // switched off (see NanoRP): nothing to do
+	}
+
 	_, err := rt.ES.Client.DeleteByQuery(rt.Config.ElasticContactsIndex).
 		Conflicts(conflicts.Proceed).
 		Raw(strings.NewReader(`{"query": {"match_all": {}}}`)).Do(t.Context())
@@ -332,6 +360,10 @@ func clearElasticContacts(t *testing.T, rt *runtime.Runtime) {
 // deletes all message indexes
 func clearElasticMessages(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
+
+	if !rt.ES.Enabled() {
+		return // switched off (see NanoRP): nothing to do
+	}
 
 	pattern := rt.Config.ElasticMessagesIndex + "-*"
 
