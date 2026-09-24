@@ -18,7 +18,7 @@ func TestConfigParse(t *testing.T) {
 	cfg.ReadonlyDB = "??"
 	cfg.Valkey = "??"
 	cfg.ElasticEndpoint = "??"
-	assert.EqualError(t, cfg.Parse(), "invalid configuration: field 'DB' is not a valid URL, field 'ReadonlyDB' is not a valid URL, field 'Valkey' is not a valid URL, field 'ElasticEndpoint' is not a valid URL")
+	assert.EqualError(t, cfg.Parse(), "invalid configuration: field 'DB' is not a valid URL, field 'ReadonlyDB' is not a valid URL, field 'Valkey' is not a valid URL, field 'ElasticEndpoint' is not a valid URL or off")
 
 	cfg = runtime.NewDefaultConfig()
 	cfg.DB = "mysql://temba:temba@postgres/temba"
