@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/goflow/core"
+	"github.com/nyaruka/goflow/core/events"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
 )
@@ -150,62 +152,77 @@ func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, o
 	return uuids, nil
 }
 
-// SearchMessagesPostgres replaces the ES search and DynamoDB lookup with a single PostgreSQL query
-// that returns the nested event dict matching the original DynamoDB schema.
+// SearchMessagesPostgres searches messages in the given org for the given text and returns them as msg_received and
+// msg_created events, the same shape the Elastic search reads back from DynamoDB. Matching is on whole words, all
+// of which must be present, using the text_search tsvector column that the nanoRP database migration adds.
 func SearchMessagesPostgres(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID core.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
-	query := `
-		SELECT m.uuid, m.text, m.created_on, m.direction,
-			   m.status, c.uuid as contact_uuid
-		FROM msgs_msg m
-		JOIN contacts_contact c ON m.contact_id = c.id
-		WHERE m.org_id = $1 AND m.text ILIKE $2 AND m.visibility = 'V'
-	`
-	args := []any{orgID, "%" + text + "%"}
-	argN := 3
+	args := []any{orgID, text}
+	clauses := []string{"m.org_id = $1", "m.text_search @@ plainto_tsquery('simple', $2)", "m.visibility = 'V'"}
+
+	// as with Elastic, searching by contact sorts purely by recency, otherwise by relevance then recency, and a search
+	// across the org only looks back 180 days
+	orderBy := "ts_rank(m.text_search, plainto_tsquery('simple', $2)) DESC, m.created_on DESC, m.id DESC"
 
 	if contactUUID != "" {
-		query += fmt.Sprintf(" AND c.uuid = $%d", argN)
 		args = append(args, string(contactUUID))
-		argN++
+		clauses = append(clauses, fmt.Sprintf("c.uuid = $%d", len(args)))
+		orderBy = "m.created_on DESC, m.id DESC"
+	} else {
+		since := dates.Now().Add(-180 * 24 * time.Hour).UTC()
+		args = append(args, time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC))
+		clauses = append(clauses, fmt.Sprintf("m.created_on >= $%d", len(args)))
+	}
+	if inTicket {
+		clauses = append(clauses, "m.ticket_uuid IS NOT NULL")
 	}
 
-	// ignoring inTicket filter for the local-first Postgres fallback since msgs_msg doesn't directly
-	// track in_ticket without joining tickets_ticket, and chat search mostly relies on text/contact.
-
-	query += fmt.Sprintf(" ORDER BY m.created_on DESC LIMIT $%d", argN)
 	args = append(args, limit)
+	query := fmt.Sprintf(`SELECT m.uuid, m.text, m.attachments, m.created_on, m.direction, m.ticket_uuid, c.uuid AS contact_uuid
+FROM msgs_msg m JOIN contacts_contact c ON c.id = m.contact_id
+WHERE %s ORDER BY %s LIMIT $%d`, strings.Join(clauses, " AND "), orderBy, len(args))
 
 	rows, err := rt.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("error searching messages in postgres: %w", err)
+		return nil, fmt.Errorf("error searching messages: %w", err)
 	}
 	defer rows.Close()
 
 	results := make([]MessageResult, 0, limit)
-	for rows.Next() {
-		var uuid, text, contactUUIDStr, direction, status string
-		var createdOn time.Time
 
-		if err := rows.Scan(&uuid, &text, &createdOn, &direction, &status, &contactUUIDStr); err != nil {
-			return nil, fmt.Errorf("error scanning message result: %w", err)
+	for rows.Next() {
+		var uuid, msgText, direction, contact string
+		var attachments pq.StringArray
+		var createdOn time.Time
+		var ticketUUID *string
+
+		if err := rows.Scan(&uuid, &msgText, &attachments, &createdOn, &direction, &ticketUUID, &contact); err != nil {
+			return nil, fmt.Errorf("error scanning message: %w", err)
 		}
 
-		evtType := "msg_received"
-		if direction == "O" {
-			evtType = "msg_created"
+		eventType := events.TypeMsgReceived
+		if models.Direction(direction) == models.DirectionOut {
+			eventType = events.TypeMsgCreated
+		}
+		if attachments == nil {
+			attachments = pq.StringArray{}
 		}
 
 		event := map[string]any{
-			"type":       evtType,
-			"created_on": createdOn.Format(time.RFC3339Nano),
+			"uuid":       uuid,
+			"type":       eventType,
+			"created_on": createdOn.UTC().Format(time.RFC3339Nano),
 			"msg": map[string]any{
 				"uuid":        uuid,
-				"text":        text,
-				"attachments": []string{}, // simplify attachments for now
+				"text":        msgText,
+				"attachments": []string(attachments),
 			},
 		}
+		if ticketUUID != nil {
+			event["ticket_uuid"] = *ticketUUID
+		}
 
-		results = append(results, MessageResult{ContactUUID: core.ContactUUID(contactUUIDStr), Event: event})
+		results = append(results, MessageResult{ContactUUID: core.ContactUUID(contact), Event: event})
 	}
-	return results, nil
+
+	return results, rows.Err()
 }
