@@ -15,6 +15,8 @@ import (
 
 func init() {
 	utils.RegisterValidatorAlias("session_storage", "eq=db|eq=s3", func(e validator.FieldError) string { return "is not a valid session storage mode" })
+	utils.RegisterValidatorAlias("url_or_off", "url|eq_ignore_case=off", func(e validator.FieldError) string { return "is not a valid URL or off" })
+	utils.RegisterValidatorAlias("http_url_or_off", "http_url|eq_ignore_case=off", func(e validator.FieldError) string { return "is not a valid HTTP URL or off" })
 
 	// valkey:// is plaintext, valkeys:// is TLS - both are accepted, redis:// isn't, as our config surface is Valkey named
 	utils.RegisterValidatorAlias("valkey_url", "startswith=valkey:|startswith=valkeys:", func(e validator.FieldError) string {
@@ -57,7 +59,7 @@ type Config struct {
 	DisallowedNetworks []string `help:"comma separated list of IP addresses and networks which engine can't make HTTP calls to"`
 	WebhookProxyURL    string   `validate:"omitempty,http_url" help:"optional URL of a forward HTTP proxy to use for user-controlled webhook calls, e.g. http://proxy.example.com:3128"`
 
-	ElasticEndpoint      string `validate:"omitempty,url" help:"the URL of your ElasticSearch instance, or off to search contacts and messages in Postgres"`
+	ElasticEndpoint      string `validate:"omitempty,url_or_off" help:"the URL of your ElasticSearch instance, or off to search contacts and messages in Postgres"`
 	ElasticUsername      string `help:"the username for ElasticSearch if using basic auth"`
 	ElasticPassword      string `help:"the password for ElasticSearch if using basic auth"`
 	ElasticContactsIndex string `help:"the name of the contacts index written by mailroom"`
@@ -76,7 +78,7 @@ type Config struct {
 	CentrifugoEndpoint string `help:"the endpoint of the Centrifugo server" validate:"url"`
 	CentrifugoKey      string `help:"the API key for the Centrifugo server"`
 
-	EmbeddingsEndpoint string `validate:"omitempty,http_url" help:"the base URL of an OpenAI compatible embeddings service, or off to disable knowledge base embeddings"`
+	EmbeddingsEndpoint string `validate:"omitempty,http_url_or_off" help:"the base URL of an OpenAI compatible embeddings service, or off to disable knowledge base embeddings"`
 	EmbeddingsModel    string `help:"the e5 model to request from the embeddings service"`
 
 	LatencyExcludedOrgs []int  `help:"comma separated list of org IDs to exclude from latency metrics"`
@@ -159,7 +161,8 @@ func NewDefaultConfig() *Config {
 
 // ServiceOff is the value which switches off one of the optional backing services: Elastic (searches then run in
 // Postgres), DynamoDB (history stays in Postgres), the S3 attachments bucket and the embeddings service. It exists
-// because ezconf discards empty environment values, so a default can't be blanked from the environment.
+// because ezconf discards empty environment values, so a default can't be blanked from the environment. The loader
+// validates the struct before Parse gets to normalise it, so the URL fields' validation tags accept the sentinel too.
 const ServiceOff = "off"
 
 // Parse validates the config and fills in the values which can't be used in the form they're configured in. It's

@@ -45,6 +45,24 @@ func TestLoadConfig(t *testing.T) {
 	assert.EqualError(t, err, "invalid configuration: field 'DB' must start with 'postgres:', field 'Valkey' must start with 'valkey:' or 'valkeys:'")
 }
 
+func TestLoadConfigServiceOff(t *testing.T) {
+	// the optional services are switched off with "off", which has to pass the loader's validation of the URL
+	// fields before Parse normalises it to an empty value
+	cfg := runtime.NewDefaultConfig()
+	require.NoError(t, loadConfig(cfg, []string{
+		`--elastic-endpoint=off`, `--dynamo-table-prefix=OFF`, `--s3-attachments-bucket=Off`, `--embeddings-endpoint=off`,
+	}))
+	assert.Equal(t, "", cfg.ElasticEndpoint)
+	assert.Equal(t, "", cfg.DynamoTablePrefix)
+	assert.Equal(t, "", cfg.S3AttachmentsBucket)
+	assert.Equal(t, "", cfg.EmbeddingsEndpoint)
+	assert.False(t, cfg.ElasticEndpoint != "")
+
+	// anything else that isn't a URL is still refused
+	err := loadConfig(runtime.NewDefaultConfig(), []string{`--elastic-endpoint=nope`})
+	require.ErrorContains(t, err, "ElasticEndpoint")
+}
+
 func TestLoadConfigHelp(t *testing.T) {
 	// asking for usage isn't a config error - usage has been shown and the sentinel tells the caller to exit cleanly
 	err := loadConfig(runtime.NewDefaultConfig(), []string{`--help`})
