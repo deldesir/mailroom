@@ -34,6 +34,24 @@ func TestConfigParse(t *testing.T) {
 	cfg = runtime.NewDefaultConfig()
 	cfg.Valkey = "valkeys://valkey:6379/15"
 	assert.NoError(t, cfg.Parse())
+
+	// the optional services are switched off with "off" rather than an empty value, which ezconf can't read from the
+	// environment, and the switch is case insensitive
+	cfg = runtime.NewDefaultConfig()
+	cfg.ElasticEndpoint = "off"
+	cfg.DynamoTablePrefix = "Off"
+	cfg.S3AttachmentsBucket = "OFF"
+	cfg.EmbeddingsEndpoint = "off"
+	assert.NoError(t, cfg.Parse())
+	assert.Equal(t, "", cfg.ElasticEndpoint)
+	assert.Equal(t, "", cfg.DynamoTablePrefix)
+	assert.Equal(t, "", cfg.S3AttachmentsBucket)
+	assert.Equal(t, "", cfg.EmbeddingsEndpoint)
+
+	// which is the only way to blank the endpoint without failing validation
+	cfg = runtime.NewDefaultConfig()
+	cfg.ElasticEndpoint = ""
+	assert.NoError(t, cfg.Parse())
 }
 
 func TestDisallowedNetworksParsing(t *testing.T) {

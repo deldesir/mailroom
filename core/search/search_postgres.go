@@ -3,467 +3,226 @@ package search
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/nyaruka/goflow/assets"
+	"github.com/lib/pq"
+	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/goflow/contactql"
 	"github.com/nyaruka/goflow/core"
+	"github.com/nyaruka/goflow/core/events"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
 )
 
-// SQLConverter builds PostgreSQL queries from ContactQL ASTs
-type SQLConverter struct {
-	oa   *models.OrgAssets
-	args []any
-}
+// The functions in this file are the Postgres equivalents of the Elastic searches in search.go and messages.go, used
+// when Elastic is off. Contact queries are converted with SQLConverter and run against contacts_contact directly.
 
-func newSQLConverter(oa *models.OrgAssets) *SQLConverter {
-	return &SQLConverter{
-		oa:   oa,
-		args: make([]any, 0, 4),
-	}
-}
+// newContactsQuery builds the WHERE clause shared by the contact searches and returns the converter holding its
+// parameters so that callers can bind more.
+func newContactsQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery) (*SQLConverter, string, error) {
+	conv := NewSQLConverter(oa.Env(), assetMapper)
 
-// Convert turns a ContactQuery into a SQL WHERE clause and argument list
-func (c *SQLConverter) Convert(query *contactql.ContactQuery) (string, []any, error) {
-	if query == nil || query.Root() == nil {
-		return "", nil, nil
-	}
-	where, err := c.convertNode(query.Root())
-	if err != nil {
-		return "", nil, err
-	}
-	return where, c.args, nil
-}
+	// deleted contacts are de-indexed from Elastic so they don't match there either
+	clauses := []string{"c.org_id = " + conv.param(oa.OrgID()), "c.is_active"}
 
-func (c *SQLConverter) convertNode(node contactql.QueryNode) (string, error) {
-	switch n := node.(type) {
-	case *contactql.Condition:
-		return c.convertCondition(n)
-	case *contactql.BoolCombination:
-		return c.convertCombination(n)
-	default:
-		return "", fmt.Errorf("unknown query node type: %T", node)
-	}
-}
-
-func (c *SQLConverter) convertCombination(comb *contactql.BoolCombination) (string, error) {
-	var parts []string
-	for _, child := range comb.Children() {
-		part, err := c.convertNode(child)
-		if err != nil {
-			return "", err
-		}
-		parts = append(parts, part)
-	}
-	
-	op := "AND"
-	if comb.Operator() == contactql.BoolOperatorOr {
-		op = "OR"
-	}
-	
-	if len(parts) == 1 {
-		return parts[0], nil
-	}
-	
-	return fmt.Sprintf("(%s)", strings.Join(parts, fmt.Sprintf(" %s ", op))), nil
-}
-
-func (c *SQLConverter) convertCondition(cond *contactql.Condition) (string, error) {
-	op := string(cond.Operator())
-	value := cond.Value()
-	
-	// Handle special operators
-	sqlOp := op
-	switch cond.Operator() {
-	case contactql.OpContains:
-		sqlOp = "ILIKE"
-		value = "%" + value + "%"
-	case contactql.OpEqual:
-		sqlOp = "="
-	case contactql.OpNotEqual:
-		sqlOp = "!="
-	case contactql.OpGreaterThan:
-		sqlOp = ">"
-	case contactql.OpLessThan:
-		sqlOp = "<"
-	case contactql.OpGreaterThanOrEqual:
-		sqlOp = ">="
-	case contactql.OpLessThanOrEqual:
-		sqlOp = "<="
-	}
-
-	c.args = append(c.args, value)
-	argRef := fmt.Sprintf("$%d", len(c.args))
-
-	switch cond.PropertyType() {
-	case contactql.PropertyTypeAttribute:
-		switch cond.PropertyKey() {
-		case contactql.AttributeGroup:
-			if (cond.Operator() == contactql.OpEqual || cond.Operator() == contactql.OpNotEqual) && value == "" {
-				oper := "NOT IN"
-				if cond.Operator() == contactql.OpNotEqual {
-					oper = "IN"
-				}
-				return fmt.Sprintf("c.id %s (SELECT contact_id FROM contacts_contactgroup_contacts)", oper), nil
-			}
-
-			// Group condition: c.id IN (SELECT contact_id FROM contacts_contactgroup_contacts WHERE contactgroup_id = $N)
-			// Resolve group by name via OrgAssets (ValueAsGroup requires a non-nil Resolver
-			// which we don't have in the PostgreSQL path — calling it with nil panics).
-			var groupID int64
-			groups, _ := c.oa.Groups()
-			for _, g := range groups {
-				if strings.EqualFold(g.Name(), cond.Value()) {
-					groupID = int64(g.(*models.Group).ID())
-					break
-				}
-			}
-			c.args[len(c.args)-1] = groupID
-			oper := "IN"
-			if cond.Operator() == contactql.OpNotEqual {
-				oper = "NOT IN"
-			}
-			return fmt.Sprintf("c.id %s (SELECT contact_id FROM contacts_contactgroup_contacts WHERE contactgroup_id = %s)", oper, argRef), nil
-
-		case contactql.AttributeName:
-			return fmt.Sprintf("c.name %s %s", sqlOp, argRef), nil
-
-		case contactql.AttributeStatus:
-			return fmt.Sprintf("c.status %s %s", sqlOp, argRef), nil
-
-		case contactql.AttributeLanguage:
-			return fmt.Sprintf("c.language %s %s", sqlOp, argRef), nil
-
-		case contactql.AttributeUUID:
-			return fmt.Sprintf("c.uuid %s %s", sqlOp, argRef), nil
-			
-		case contactql.AttributeCreatedOn:
-			dt, err := cond.ValueAsDate(c.oa.Env())
-			if err != nil {
-				return "", err
-			}
-			c.args[len(c.args)-1] = dt
-			return fmt.Sprintf("c.created_on %s %s", sqlOp, argRef), nil
-			
-		default:
-			// Fallback placeholder... real implementation might address more fields
-			return "TRUE", nil
-		}
-
-	case contactql.PropertyTypeURN:
-		if (cond.Operator() == contactql.OpEqual || cond.Operator() == contactql.OpNotEqual) && value == "" {
-			oper := "NOT IN"
-			if cond.Operator() == contactql.OpNotEqual {
-				oper = "IN"
-			}
-			scheme := cond.PropertyKey()
-			c.args = append(c.args, scheme)
-			schemeArgRef := fmt.Sprintf("$%d", len(c.args))
-			
-			return fmt.Sprintf("c.id %s (SELECT contact_id FROM contacts_contacturn u WHERE u.scheme = %s AND u.path != '')", oper, schemeArgRef), nil
-		}
-
-		// URN condition: EXISTS (SELECT 1 FROM contacts_contacturn u WHERE u.contact_id = c.id AND u.scheme = $1 AND u.path = $2)
-		// Or URN contains: u.scheme = $1 AND u.path ILIKE $2
-		
-		oper := "IN"
-		if cond.Operator() == contactql.OpNotEqual {
-			oper = "NOT IN"
-		}
-		
-		scheme := cond.PropertyKey()
-		c.args = append(c.args, scheme)
-		schemeArgRef := fmt.Sprintf("$%d", len(c.args))
-		
-		return fmt.Sprintf("c.id %s (SELECT contact_id FROM contacts_contacturn u WHERE u.scheme = %s AND u.path %s %s)", oper, schemeArgRef, sqlOp, argRef), nil
-
-	case contactql.PropertyTypeField:
-		if (cond.Operator() == contactql.OpEqual || cond.Operator() == contactql.OpNotEqual) && value == "" {
-			c.args = append(c.args, cond.PropertyKey())
-			keyArg := fmt.Sprintf("$%d", len(c.args))
-			if cond.Operator() == contactql.OpEqual {
-				return fmt.Sprintf("(NOT (c.fields ? %s) OR c.fields->>%s = '')", keyArg, keyArg), nil
-			}
-			return fmt.Sprintf("(c.fields ? %s AND c.fields->>%s != '')", keyArg, keyArg), nil
-		}
-
-		// c.fields->>'key' = $N
-		// Number comparisons require casting
-		field := c.oa.FieldByKey(cond.PropertyKey())
-		if field != nil && field.Type() == assets.FieldTypeNumber {
-			num, err := cond.ValueAsNumber()
-			if err != nil {
-				return "", err
-			}
-			c.args[len(c.args)-1] = num
-			return fmt.Sprintf("(c.fields->>'%s')::numeric %s %s", cond.PropertyKey(), sqlOp, argRef), nil
-		}
-		
-		return fmt.Sprintf("c.fields->>'%s' %s %s", cond.PropertyKey(), sqlOp, argRef), nil
-	}
-
-	return "", fmt.Errorf("unsupported property type")
-}
-
-func buildBasePostgresQuery(oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery) (string, []any, error) {
-	c := newSQLConverter(oa)
-	
-	c.args = append(c.args, oa.OrgID())
-	orgArg := fmt.Sprintf("$%d", len(c.args))
-	
-	where := fmt.Sprintf("c.org_id = %s", orgArg)
-	
 	if group != nil {
-		c.args = append(c.args, group.ID())
-		where += fmt.Sprintf(" AND c.id IN (SELECT contact_id FROM contacts_contactgroup_contacts WHERE contactgroup_id = $%d)", len(c.args))
+		clauses = append(clauses, fmt.Sprintf("EXISTS (SELECT 1 FROM contacts_contactgroup_contacts gc WHERE gc.contact_id = c.id AND gc.contactgroup_id = %s)", conv.param(group.ID())))
 	}
-	
 	if status != models.NilContactStatus {
-		c.args = append(c.args, string(status))
-		where += fmt.Sprintf(" AND c.status = $%d", len(c.args))
+		clauses = append(clauses, "c.status = "+conv.param(status))
 	}
-	
 	if len(excludeUUIDs) > 0 {
-		var placeHolders []string
-		for _, u := range excludeUUIDs {
-			c.args = append(c.args, string(u))
-			placeHolders = append(placeHolders, fmt.Sprintf("$%d", len(c.args)))
+		uuids := make([]string, len(excludeUUIDs))
+		for i, u := range excludeUUIDs {
+			uuids[i] = string(u)
 		}
-		where += fmt.Sprintf(" AND c.uuid NOT IN (%s)", strings.Join(placeHolders, ","))
+		clauses = append(clauses, "c.uuid <> ALL("+conv.param(pq.StringArray(uuids))+")")
 	}
-	
 	if parsed != nil {
-		queryWhere, _, err := c.Convert(parsed)
+		where, err := conv.Query(parsed)
 		if err != nil {
-			return "", nil, err
+			return nil, "", fmt.Errorf("error converting query to SQL: %w", err)
 		}
-		if queryWhere != "" {
-			where += " AND (" + queryWhere + ")"
-		}
+		clauses = append(clauses, where)
 	}
-	
-	return where, c.args, nil
+
+	return conv, strings.Join(clauses, " AND "), nil
 }
 
-// GetContactTotalPostgres replaces ES Count() with PostgreSQL COUNT(*)
-func GetContactTotalPostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery) (int64, error) {
-	where, args, err := buildBasePostgresQuery(oa, group, status, excludeUUIDs, parsed)
-	if err != nil {
-		return 0, fmt.Errorf("error building postgres query: %w", err)
-	}
-
-	query := fmt.Sprintf("SELECT COUNT(*) FROM contacts_contact c WHERE %s", where)
-	
+func countContacts(ctx context.Context, rt *runtime.Runtime, where string, args []any) (int64, error) {
 	var count int64
-	err = rt.DB.QueryRowContext(ctx, query, args...).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("error executing postgres count: %w", err)
+	if err := rt.DB.GetContext(ctx, &count, "SELECT COUNT(*) FROM contacts_contact c WHERE "+where, args...); err != nil {
+		return 0, fmt.Errorf("error counting contacts: %w", err)
 	}
-	
 	return count, nil
 }
 
-// GetContactUUIDsForQueryPagePostgres replaces ES Search() locally
-func GetContactUUIDsForQueryPagePostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery, sortField string, sortDesc bool, offset int, pageSize int) ([]core.ContactUUID, int64, error) {
-	where, args, err := buildBasePostgresQuery(oa, group, status, excludeUUIDs, parsed)
+// GetContactTotalPostgres returns the total count of contacts matching the given query
+func GetContactTotalPostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, parsed *contactql.ContactQuery) (int64, error) {
+	conv, where, err := newContactsQuery(oa, group, status, nil, parsed)
 	if err != nil {
-		return nil, 0, fmt.Errorf("error building postgres query: %w", err)
-	}
-	
-	// total query
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM contacts_contact c WHERE %s", where)
-	var total int64
-	err = rt.DB.QueryRowContext(ctx, countQuery, args...).Scan(&total)
-	if err != nil {
-		return nil, 0, fmt.Errorf("error executing postgres count: %w", err)
+		return 0, err
 	}
 
+	return countContacts(ctx, rt, where, conv.Args())
+}
+
+// GetContactUUIDsForQueryPagePostgres returns a page of contact UUIDs for the given query and sort, and the total
+// number of matches
+func GetContactUUIDsForQueryPagePostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, excludeUUIDs []core.ContactUUID, parsed *contactql.ContactQuery, sort string, offset int, pageSize int) ([]core.ContactUUID, int64, error) {
+	conv, where, err := newContactsQuery(oa, group, status, excludeUUIDs, parsed)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// the count query only sees the parameters bound so far
+	total, err := countContacts(ctx, rt, where, slices.Clone(conv.Args()))
+	if err != nil {
+		return nil, 0, err
+	}
 	if total == 0 {
 		return []core.ContactUUID{}, 0, nil
 	}
 
-	// Make copy of args for row query since we're mutating length
-	rowArgs := make([]any, len(args))
-	copy(rowArgs, args)
-	
-	// sort
-	order := "ASC"
-	if sortDesc {
-		order = "DESC"
-	}
-	
-	sortMap := map[string]string{
-		"created_on": "c.created_on",
-		"id": "c.id",
-		"name": "c.name",
-		"urn": "c.id", // simplified
-	}
-	
-	sortCol, ok := sortMap[sortField]
-	if !ok {
-		sortCol = "c.id"
-	}
-
-	orderBy := fmt.Sprintf("%s %s", sortCol, order)
-	if sortCol != "c.id" {
-		orderBy += ", c.id " + order // Deterministic tiebreaker
-	}
-
-	rowArgs = append(rowArgs, pageSize, offset)
-	query := fmt.Sprintf("SELECT c.uuid FROM contacts_contact c WHERE %s ORDER BY %s LIMIT $%d OFFSET $%d", where, orderBy, len(rowArgs)-1, len(rowArgs))
-	
-	rows, err := rt.DB.QueryContext(ctx, query, rowArgs...)
+	orderBy, err := conv.Sort(sort, oa.SessionAssets())
 	if err != nil {
-		return nil, 0, fmt.Errorf("error executing postgres page query: %w", err)
+		return nil, 0, fmt.Errorf("error converting sort to SQL: %w", err)
 	}
-	defer rows.Close()
 
-	var uuids []core.ContactUUID
-	for rows.Next() {
-		var uuidStr string
-		if err := rows.Scan(&uuidStr); err != nil {
-			return nil, 0, err
-		}
-		uuids = append(uuids, core.ContactUUID(uuidStr))
+	query := fmt.Sprintf("SELECT c.uuid FROM contacts_contact c WHERE %s ORDER BY %s LIMIT %s OFFSET %s", where, orderBy, conv.param(pageSize), conv.param(offset))
+
+	uuids := make([]core.ContactUUID, 0, pageSize)
+	if err := rt.DB.SelectContext(ctx, &uuids, query, conv.Args()...); err != nil {
+		return nil, 0, fmt.Errorf("error querying contacts page: %w", err)
 	}
-	
+
 	return uuids, total, nil
 }
 
-// GetContactUUIDsForQueryPostgres replaces the ES Point-In-Time iterator with chunked PostgreSQL queries.
+// GetContactUUIDsForQueryPostgres returns up to limit the contact UUIDs that match the given query, sorted by contact
+// ID. Limit of -1 means return all. Results are read in batches by keyset so that no single query is unbounded.
 func GetContactUUIDsForQueryPostgres(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, group *models.Group, status models.ContactStatus, parsed *contactql.ContactQuery, limit int) ([]core.ContactUUID, error) {
-	where, args, err := buildBasePostgresQuery(oa, group, status, nil, parsed)
-	if err != nil {
-		return nil, fmt.Errorf("error building postgres query: %w", err)
-	}
-	
-	// If limit is bounded and small enough, use standard LIMIT
-	if limit >= 0 && limit <= 10000 {
-		args = append(args, limit)
-		query := fmt.Sprintf("SELECT c.uuid FROM contacts_contact c WHERE %s ORDER BY c.id ASC LIMIT $%d", where, len(args))
-		
-		rows, err := rt.DB.QueryContext(ctx, query, args...)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
+	const batchSize = 10_000
 
-		var uuids []core.ContactUUID
-		for rows.Next() {
-			var uuidStr string
-			if err := rows.Scan(&uuidStr); err != nil {
-				return nil, err
-			}
-			uuids = append(uuids, core.ContactUUID(uuidStr))
-		}
+	uuids := make([]core.ContactUUID, 0, 100)
+	if limit == 0 {
 		return uuids, nil
 	}
-	
-	// For unbounded/large sets, use chunks with keyset pagination
-	// Using cursor id logic
-	var uuids []core.ContactUUID
-	lastID := int64(-1)
-	
+
+	conv, where, err := newContactsQuery(oa, group, status, nil, parsed)
+	if err != nil {
+		return nil, err
+	}
+	baseArgs := conv.Args()
+
+	type row struct {
+		ID   models.ContactID `db:"id"`
+		UUID core.ContactUUID `db:"uuid"`
+	}
+
+	afterID := models.ContactID(0)
+
 	for {
-		chunkArgs := make([]any, len(args))
-		copy(chunkArgs, args)
-		
-		chunkArgs = append(chunkArgs, lastID, 10000)
-		
-		query := fmt.Sprintf("SELECT c.id, c.uuid FROM contacts_contact c WHERE %s AND c.id > $%d ORDER BY c.id ASC LIMIT $%d", where, len(chunkArgs)-1, len(chunkArgs))
-		
-		rows, err := rt.DB.QueryContext(ctx, query, chunkArgs...)
-		if err != nil {
-			return nil, err
+		size := batchSize
+		if limit != -1 && limit-len(uuids) < size {
+			size = limit - len(uuids)
 		}
-		
-		var chunkUuids []core.ContactUUID
-		for rows.Next() {
-			var uuidStr string
-			var id int64
-			if err := rows.Scan(&id, &uuidStr); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			chunkUuids = append(chunkUuids, core.ContactUUID(uuidStr))
-			lastID = id
+
+		args := slices.Clone(baseArgs)
+		args = append(args, afterID, size)
+		query := fmt.Sprintf("SELECT c.id, c.uuid FROM contacts_contact c WHERE %s AND c.id > $%d ORDER BY c.id ASC LIMIT $%d", where, len(args)-1, len(args))
+
+		var batch []row
+		if err := rt.DB.SelectContext(ctx, &batch, query, args...); err != nil {
+			return nil, fmt.Errorf("error querying contacts: %w", err)
 		}
-		rows.Close()
-		
-		if len(chunkUuids) == 0 {
-			break
+
+		for _, r := range batch {
+			uuids = append(uuids, r.UUID)
+			afterID = r.ID
 		}
-		
-		uuids = append(uuids, chunkUuids...)
-		
-		if limit != -1 && len(uuids) >= limit {
-			uuids = uuids[:limit]
+
+		if len(batch) < size || (limit != -1 && len(uuids) >= limit) {
 			break
 		}
 	}
-	
+
 	return uuids, nil
 }
 
-// SearchMessagesPostgres replaces the ES search and DynamoDB lookup with a single PostgreSQL query
-// that returns the nested event dict matching the original DynamoDB schema.
+// SearchMessagesPostgres searches messages in the given org for the given text and returns them as msg_received and
+// msg_created events, the same shape the Elastic search reads back from DynamoDB. Matching is on whole words, all
+// of which must be present, using the text_search tsvector column that the nanoRP database migration adds.
 func SearchMessagesPostgres(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID core.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
-	query := `
-		SELECT m.uuid, m.text, m.created_on, m.direction,
-			   m.status, c.uuid as contact_uuid
-		FROM msgs_msg m
-		JOIN contacts_contact c ON m.contact_id = c.id
-		WHERE m.org_id = $1 AND m.text ILIKE $2 AND m.visibility = 'V'
-	`
-	args := []any{orgID, "%" + text + "%"}
-	argN := 3
+	args := []any{orgID, text}
+	clauses := []string{"m.org_id = $1", "m.text_search @@ plainto_tsquery('simple', $2)", "m.visibility = 'V'"}
+
+	// as with Elastic, searching by contact sorts purely by recency, otherwise by relevance then recency, and a search
+	// across the org only looks back 180 days
+	orderBy := "ts_rank(m.text_search, plainto_tsquery('simple', $2)) DESC, m.created_on DESC, m.id DESC"
 
 	if contactUUID != "" {
-		query += fmt.Sprintf(" AND c.uuid = $%d", argN)
 		args = append(args, string(contactUUID))
-		argN++
+		clauses = append(clauses, fmt.Sprintf("c.uuid = $%d", len(args)))
+		orderBy = "m.created_on DESC, m.id DESC"
+	} else {
+		since := dates.Now().Add(-180 * 24 * time.Hour).UTC()
+		args = append(args, time.Date(since.Year(), since.Month(), since.Day(), 0, 0, 0, 0, time.UTC))
+		clauses = append(clauses, fmt.Sprintf("m.created_on >= $%d", len(args)))
+	}
+	if inTicket {
+		clauses = append(clauses, "m.ticket_uuid IS NOT NULL")
 	}
 
-	// ignoring inTicket filter for the local-first Postgres fallback since msgs_msg doesn't directly
-	// track in_ticket without joining tickets_ticket, and chat search mostly relies on text/contact.
-	
-	query += fmt.Sprintf(" ORDER BY m.created_on DESC LIMIT $%d", argN)
 	args = append(args, limit)
+	query := fmt.Sprintf(`SELECT m.uuid, m.text, m.attachments, m.created_on, m.direction, m.ticket_uuid, c.uuid AS contact_uuid
+FROM msgs_msg m JOIN contacts_contact c ON c.id = m.contact_id
+WHERE %s ORDER BY %s LIMIT $%d`, strings.Join(clauses, " AND "), orderBy, len(args))
 
 	rows, err := rt.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("error searching messages in postgres: %w", err)
+		return nil, fmt.Errorf("error searching messages: %w", err)
 	}
 	defer rows.Close()
 
 	results := make([]MessageResult, 0, limit)
+
 	for rows.Next() {
-		var uuid, text, contactUUIDStr, direction, status string
+		var uuid, msgText, direction, contact string
+		var attachments pq.StringArray
 		var createdOn time.Time
-		
-		if err := rows.Scan(&uuid, &text, &createdOn, &direction, &status, &contactUUIDStr); err != nil {
-			return nil, fmt.Errorf("error scanning message result: %w", err)
+		var ticketUUID *string
+
+		if err := rows.Scan(&uuid, &msgText, &attachments, &createdOn, &direction, &ticketUUID, &contact); err != nil {
+			return nil, fmt.Errorf("error scanning message: %w", err)
 		}
 
-		evtType := "msg_received"
-		if direction == "O" {
-			evtType = "msg_created"
+		eventType := events.TypeMsgReceived
+		if models.Direction(direction) == models.DirectionOut {
+			eventType = events.TypeMsgCreated
+		}
+		if attachments == nil {
+			attachments = pq.StringArray{}
 		}
 
 		event := map[string]any{
-			"type":       evtType,
-			"created_on": createdOn.Format(time.RFC3339Nano),
+			"uuid":       uuid,
+			"type":       eventType,
+			"created_on": createdOn.UTC().Format(time.RFC3339Nano),
 			"msg": map[string]any{
 				"uuid":        uuid,
-				"text":        text,
-				"attachments": []string{}, // simplify attachments for now
+				"text":        msgText,
+				"attachments": []string(attachments),
 			},
 		}
+		if ticketUUID != nil {
+			event["ticket_uuid"] = *ticketUUID
+		}
 
-		results = append(results, MessageResult{ContactUUID: core.ContactUUID(contactUUIDStr), Event: event})
+		results = append(results, MessageResult{ContactUUID: core.ContactUUID(contact), Event: event})
 	}
-	return results, nil
+
+	return results, rows.Err()
 }

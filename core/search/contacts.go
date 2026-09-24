@@ -137,7 +137,7 @@ func NewContactDoc(oa *models.OrgAssets, c *core.Contact, currentFlowID models.F
 
 // IndexContacts builds contact documents and queues them for indexing in Elastic.
 func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAssets, contacts []*core.Contact, currentFlows map[models.ContactID]models.FlowID) error {
-	if len(contacts) == 0 || isNanorpMode(rt) {
+	if len(contacts) == 0 || !rt.ES.Enabled() {
 		return nil
 	}
 
@@ -171,6 +171,7 @@ func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsset
 
 	return nil
 }
+
 // DeindexContactsByUUID de-indexes the contacts with the given UUIDs from Elastic
 func DeindexContactsByUUID(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []core.ContactUUID) (int, error) {
 	routing := orgID.String()
@@ -181,7 +182,7 @@ func DeindexContactsByUUID(ctx context.Context, rt *runtime.Runtime, orgID model
 // deindexContactDocs bulk-deletes the given contact docs from Elastic. The index uses custom routing so each delete
 // must be routed to the org of the doc it's deleting.
 func deindexContactDocs(ctx context.Context, rt *runtime.Runtime, contactUUIDs []core.ContactUUID, routing func(core.ContactUUID) string) (int, error) {
-	if isNanorpMode(rt) {
+	if !rt.ES.Enabled() {
 		return 0, nil
 	}
 	if len(contactUUIDs) == 0 {
@@ -325,7 +326,7 @@ func getOrphanedUUIDs(ctx context.Context, rt *runtime.Runtime, uuids []core.Con
 
 // DeindexContactsByOrg de-indexes all contacts in the given org from Elastic
 func DeindexContactsByOrg(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, limit int) (int, error) {
-	if isNanorpMode(rt) {
+	if !rt.ES.Enabled() {
 		return 0, nil
 	}
 

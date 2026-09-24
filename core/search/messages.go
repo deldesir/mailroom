@@ -54,7 +54,7 @@ type MessageResult struct {
 // SearchMessages searches the Elasticsearch messages index for messages matching the given text in the given org,
 // then fetches the corresponding events from DynamoDB.
 func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, text string, contactUUID core.ContactUUID, inTicket bool, limit int) ([]MessageResult, error) {
-	if isNanorpMode(rt) {
+	if !rt.ES.Enabled() {
 		return SearchMessagesPostgres(ctx, rt, orgID, text, contactUUID, inTicket, limit)
 	}
 
@@ -161,7 +161,7 @@ func SearchMessages(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID
 // DeindexMessages queues deletes for the given messages on the Elasticsearch writer. The monthly index
 // for each message is derived from its v7 UUID timestamp.
 func DeindexMessages(rt *runtime.Runtime, orgID models.OrgID, msgUUIDs []events.EventUUID) error {
-	if isNanorpMode(rt) {
+	if !rt.ES.Enabled() {
 		return nil
 	}
 
@@ -183,7 +183,7 @@ func DeindexMessages(rt *runtime.Runtime, orgID models.OrgID, msgUUIDs []events.
 
 // DeindexMessagesByContact deletes all messages in the Elasticsearch messages index for the given contact UUIDs.
 func DeindexMessagesByContact(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []core.ContactUUID) error {
-	if isNanorpMode(rt) {
+	if !rt.ES.Enabled() {
 		return nil
 	}
 

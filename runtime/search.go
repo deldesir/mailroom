@@ -16,14 +16,11 @@ type Elastic struct {
 	Spool  *elastic.Spool
 }
 
+// newElastic creates the Elastic client, writer and spool, or a disabled instance if no endpoint is configured
 func newElastic(cfg *Config) (*Elastic, error) {
 	if cfg.ElasticEndpoint == "" {
-		slog.Info("Elasticsearch disabled (MAILROOM_ELASTIC_ENDPOINT is empty)")
-		return &Elastic{
-			Client: nil, // Explicitly nil — read functions check isNanorpMode()
-			Writer: nil, // No writer needed without ES
-			Spool:  nil, // No spool needed without ES
-		}, nil
+		slog.Info("elasticsearch is off, searching in postgres")
+		return &Elastic{}, nil
 	}
 
 	client, err := elastic.NewClient(cfg.ElasticEndpoint, cfg.ElasticUsername, cfg.ElasticPassword)
@@ -40,24 +37,30 @@ func newElastic(cfg *Config) (*Elastic, error) {
 	}, nil
 }
 
+// Enabled returns whether Elasticsearch is configured. When it isn't, nothing is indexed and contact and message
+// searches run against Postgres instead.
+func (s *Elastic) Enabled() bool {
+	return s != nil && s.Client != nil
+}
+
 func (s *Elastic) start() error {
-	if s.Spool != nil {
-		if err := s.Spool.Start(); err != nil {
-			return fmt.Errorf("error starting elastic spool: %w", err)
-		}
+	if !s.Enabled() {
+		return nil
 	}
 
-	if s.Writer != nil {
-		s.Writer.Start()
+	if err := s.Spool.Start(); err != nil {
+		return fmt.Errorf("error starting elastic spool: %w", err)
 	}
+
+	s.Writer.Start()
 	return nil
 }
 
 func (s *Elastic) stop() {
-	if s.Writer != nil {
-		s.Writer.Stop()
+	if !s.Enabled() {
+		return
 	}
-	if s.Spool != nil {
-		s.Spool.Stop()
-	}
+
+	s.Writer.Stop()
+	s.Spool.Stop()
 }

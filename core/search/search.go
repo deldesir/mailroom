@@ -105,10 +105,9 @@ func GetContactTotal(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAss
 		group = nil
 	}
 
-	// nanorp: return Postgres count when ES is disabled
-	if isNanorpMode(rt) {
-		total, postgresErr := GetContactTotalPostgres(ctx, rt, oa, group, status, nil, parsed)
-		return parsed, total, postgresErr
+	if !rt.ES.Enabled() {
+		total, err := GetContactTotalPostgres(ctx, rt, oa, group, status, parsed)
+		return parsed, total, err
 	}
 
 	index := rt.Config.ElasticContactsIndex
@@ -149,30 +148,15 @@ func GetContactUUIDsForQueryPage(ctx context.Context, rt *runtime.Runtime, oa *m
 		return nil, nil, 0, fmt.Errorf("error parsing sort: %w", err)
 	}
 
-	// nanorp: use Postgres fallback when ES is disabled
-	if isNanorpMode(rt) {
-		var sortField string
-		var sortDesc bool
-
-		// Map simple sort strings from "id", "-created_on" to Postgres column representations
-		if sort != "" {
-			if sort[0] == '-' {
-				sortDesc = true
-				sortField = sort[1:]
-			} else {
-				sortField = sort
-			}
-		}
-
-		slog.Debug("executing paged postgres local-first search override", "org_id", oa.OrgID())
-		starts := time.Now()
-		hits, total, postgresErr := GetContactUUIDsForQueryPagePostgres(ctx, rt, oa, group, status, excludeUUIDs, parsed, sortField, sortDesc, offset, pageSize)
-		rt.Stats.RecordSearch("contacts", time.Since(starts))
-		return parsed, hits, total, postgresErr
-	}
-
 	start := time.Now()
-	hits, total, err := getContactUUIDsForQueryPage(ctx, rt, oa, group, status, excludeUUIDs, parsed, fieldSort, offset, pageSize, rt.Config.ElasticContactsIndex)
+	var hits []core.ContactUUID
+	var total int64
+
+	if rt.ES.Enabled() {
+		hits, total, err = getContactUUIDsForQueryPage(ctx, rt, oa, group, status, excludeUUIDs, parsed, fieldSort, offset, pageSize, rt.Config.ElasticContactsIndex)
+	} else {
+		hits, total, err = GetContactUUIDsForQueryPagePostgres(ctx, rt, oa, group, status, excludeUUIDs, parsed, sort, offset, pageSize)
+	}
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -228,9 +212,7 @@ func GetContactUUIDsForQuery(ctx context.Context, rt *runtime.Runtime, oa *model
 		group = nil
 	}
 
-	// nanorp: use Postgres cursor looping when ES is disabled
-	if isNanorpMode(rt) {
-		slog.Debug("executing unpaged postgres local-first search override", "org_id", oa.OrgID())
+	if !rt.ES.Enabled() {
 		return GetContactUUIDsForQueryPostgres(ctx, rt, oa, group, status, parsed, limit)
 	}
 
