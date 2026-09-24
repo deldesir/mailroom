@@ -171,6 +171,7 @@ func IndexContacts(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsset
 
 	return nil
 }
+
 // DeindexContactsByUUID de-indexes the contacts with the given UUIDs from Elastic
 func DeindexContactsByUUID(ctx context.Context, rt *runtime.Runtime, orgID models.OrgID, contactUUIDs []core.ContactUUID) (int, error) {
 	routing := orgID.String()
