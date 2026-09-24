@@ -88,9 +88,8 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 		return nil, fmt.Errorf("error creating Valkey pool: %w", err)
 	}
 
-	// nanoRP hard default: S3 (and AWS) is OFF unless an attachments bucket is
-	// explicitly configured. Skip client creation so the AWS SDK never resolves
-	// credentials (no IMDS probe).
+	// with the attachments bucket switched off (see ServiceOff) no client is created, so the AWS SDK never resolves
+	// credentials, and callers check for a nil S3 service
 	if cfg.S3AttachmentsBucket != "" {
 		rt.S3, err = s3x.NewService(ctx, cfg.S3Endpoint, cfg.S3PathStyle)
 		if err != nil {

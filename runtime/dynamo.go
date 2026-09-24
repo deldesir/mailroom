@@ -16,11 +16,8 @@ type Dynamo struct {
 }
 
 func newDynamo(cfg *Config) (*Dynamo, error) {
-	// nanoRP hard default: Dynamo — and therefore AWS — is OFF unless a
-	// DynamoTablePrefix is explicitly configured. With no prefix we skip client
-	// creation entirely, so the AWS SDK never resolves credentials (no IMDS
-	// probe, no AWS dependency). The returned struct is "disabled": all callers
-	// gate Dynamo work behind Enabled().
+	// with the table prefix switched off (see ServiceOff) no client is created, so the AWS SDK never resolves
+	// credentials, and the returned instance reports itself as not enabled
 	if cfg.DynamoTablePrefix == "" {
 		return &Dynamo{}, nil
 	}
@@ -39,8 +36,7 @@ func newDynamo(cfg *Config) (*Dynamo, error) {
 	}, nil
 }
 
-// Enabled reports whether Dynamo is configured. nanoRP runs with it off, in
-// which case all writes/reads are skipped and no AWS client is ever created.
+// Enabled returns whether DynamoDB is configured. When it isn't, callers skip their reads and writes.
 func (d *Dynamo) Enabled() bool {
 	return d != nil && d.Main != nil
 }
