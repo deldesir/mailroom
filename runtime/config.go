@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"os"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/nyaruka/gocommon/httpx"
@@ -57,7 +57,7 @@ type Config struct {
 	DisallowedNetworks []string `help:"comma separated list of IP addresses and networks which engine can't make HTTP calls to"`
 	WebhookProxyURL    string   `validate:"omitempty,http_url" help:"optional URL of a forward HTTP proxy to use for user-controlled webhook calls, e.g. http://proxy.example.com:3128"`
 
-	ElasticEndpoint      string `validate:"omitempty,url" help:"the URL of your ElasticSearch instance"`
+	ElasticEndpoint      string `validate:"omitempty,url" help:"the URL of your ElasticSearch instance, or off to search contacts and messages in Postgres"`
 	ElasticUsername      string `help:"the username for ElasticSearch if using basic auth"`
 	ElasticPassword      string `help:"the password for ElasticSearch if using basic auth"`
 	ElasticContactsIndex string `help:"the name of the contacts index written by mailroom"`
@@ -76,7 +76,7 @@ type Config struct {
 	CentrifugoEndpoint string `help:"the endpoint of the Centrifugo server" validate:"url"`
 	CentrifugoKey      string `help:"the API key for the Centrifugo server"`
 
-	EmbeddingsEndpoint string `validate:"omitempty,http_url" help:"the base URL of an OpenAI compatible embeddings service (empty disables knowledge base embeddings)"`
+	EmbeddingsEndpoint string `validate:"omitempty,http_url" help:"the base URL of an OpenAI compatible embeddings service, or off to disable knowledge base embeddings"`
 	EmbeddingsModel    string `help:"the e5 model to request from the embeddings service"`
 
 	LatencyExcludedOrgs []int  `help:"comma separated list of org IDs to exclude from latency metrics"`
@@ -100,13 +100,7 @@ type Config struct {
 
 // NewDefaultConfig returns a new default configuration object
 func NewDefaultConfig() *Config {
-	// Detect Android/Termux environment
-	isAndroid := false
-	if _, err := os.Stat("/data/data/com.termux"); err == nil {
-		isAndroid = true
-	}
-
-	conf := &Config{
+	return &Config{
 		DB:         "postgres://temba:temba@postgres/temba?sslmode=disable&Timezone=UTC",
 		ReadonlyDB: "",
 		DBPoolSize: 36,
@@ -122,8 +116,7 @@ func NewDefaultConfig() *Config {
 
 		CentrifugoEndpoint: "http://localhost:8000/api",
 
-		// nanoRP hard default: no embeddings service — knowledge base indexing/search disabled until configured
-		EmbeddingsEndpoint: "",
+		EmbeddingsEndpoint: "http://localhost:3000/v1",
 		EmbeddingsModel:    "intfloat/multilingual-e5-small",
 
 		WorkersRealtime:  32,
@@ -140,17 +133,17 @@ func NewDefaultConfig() *Config {
 		SMTPServer:         "",
 		DisallowedNetworks: []string{`127.0.0.0/8`, `::1`, `fe80::/10`, `fc00::/7`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16`, `0.0.0.0/8`},
 
-		ElasticEndpoint:      "",
+		ElasticEndpoint:      "http://elastic:9200",
 		ElasticUsername:      "",
 		ElasticPassword:      "",
 		ElasticContactsIndex: "contacts-v1",
 		ElasticMessagesIndex: "messages-v1",
 
 		DynamoEndpoint:    "", // let library generate it
-		DynamoTablePrefix: "",
+		DynamoTablePrefix: "Temba",
 
 		S3Endpoint:          "https://s3.amazonaws.com",
-		S3AttachmentsBucket: "",
+		S3AttachmentsBucket: "temba-attachments",
 
 		MetricsReporting:    "off",
 		CloudwatchNamespace: "Mailroom",
@@ -162,30 +155,24 @@ func NewDefaultConfig() *Config {
 		UUIDSeed: 0,
 		Version:  "Dev",
 	}
-
-	// Apply Smart Defaults for Android
-	if isAndroid {
-		// Use Unix domain socket for Postgres (assuming /tmp is the socket dir)
-		// Note: We provide 'localhost' to satisfy the 'url' validator, but host=/tmp forces socket usage.
-		conf.DB = "postgres://temba:temba@localhost/temba?host=/tmp&sslmode=disable"
-		// Use Unix socket for Valkey (compatible with django-valkey format)
-		conf.Valkey = "valkey://localhost:6379/15?socket_path=/tmp/valkey.sock"
-		// Use writable spool dir in home
-		home := os.Getenv("HOME")
-		if home == "" {
-			home = "/data/data/com.termux/files/home"
-		}
-		conf.SpoolDir = fmt.Sprintf("%s/spool/mailroom", home)
-	}
-
-	return conf
 }
+
+// ServiceOff is the value which switches off one of the optional backing services: Elastic (searches then run in
+// Postgres), DynamoDB (history stays in Postgres), the S3 attachments bucket and the embeddings service. It exists
+// because ezconf discards empty environment values, so a default can't be blanked from the environment.
+const ServiceOff = "off"
 
 // Parse validates the config and fills in the values which can't be used in the form they're configured in. It's
 // called by cmd.LoadConfig, and a config built by other means (e.g. NewDefaultConfig in a test) must be parsed before
 // being handed to NewRuntime - the values it fills in have no meaningful zero value, so skipping it would silently
 // leave the SSRF blocklist empty rather than fail.
 func (c *Config) Parse() error {
+	for _, setting := range []*string{&c.ElasticEndpoint, &c.DynamoTablePrefix, &c.S3AttachmentsBucket, &c.EmbeddingsEndpoint} {
+		if strings.EqualFold(*setting, ServiceOff) {
+			*setting = ""
+		}
+	}
+
 	// ensure config is valid
 	if err := utils.Validate(c); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
