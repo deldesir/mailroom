@@ -64,10 +64,17 @@ func RunWebTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 
 	defer test.MockUniverse()()
 
+	// with Elastic or DynamoDB switched off (see NanoRP) nothing is written to them, so what a case expects
+	// to find there isn't checked
+	checkIndexed := rt.ES.Enabled()
+	checkHistory := rt.Dynamo.Enabled()
+
 	// track which messages were already indexed before each test case so we only report new ones
 	prevIndexedIDs := make(map[string]bool)
-	for _, m := range GetIndexedMessages(t, rt, false) {
-		prevIndexedIDs[m.ID] = true
+	if checkIndexed {
+		for _, m := range GetIndexedMessages(t, rt, false) {
+			prevIndexedIDs[m.ID] = true
+		}
 	}
 
 	for i, tc := range tcs {
@@ -107,13 +114,17 @@ func RunWebTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 		actual.Status = resp.StatusCode
 		actual.actualResponse, err = io.ReadAll(resp.Body)
 		actual.ExpectedTasks = GetQueuedTasks(t, rt)
-		actual.ExpectedHistory = GetHistoryItems(t, rt, true, test.MockStartTime)
-		allIndexed := GetIndexedMessages(t, rt, false)
-		actual.IndexedMessages = make([]IndexedMessage, 0, len(allIndexed))
-		for _, m := range allIndexed {
-			if !prevIndexedIDs[m.ID] {
-				actual.IndexedMessages = append(actual.IndexedMessages, m)
-				prevIndexedIDs[m.ID] = true
+		if checkHistory {
+			actual.ExpectedHistory = GetHistoryItems(t, rt, true, test.MockStartTime)
+		}
+		if checkIndexed {
+			allIndexed := GetIndexedMessages(t, rt, false)
+			actual.IndexedMessages = make([]IndexedMessage, 0, len(allIndexed))
+			for _, m := range allIndexed {
+				if !prevIndexedIDs[m.ID] {
+					actual.IndexedMessages = append(actual.IndexedMessages, m)
+					prevIndexedIDs[m.ID] = true
+				}
 			}
 		}
 
@@ -176,18 +187,22 @@ func RunWebTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 			}
 			test.AssertEqualJSON(t, jsonx.MustMarshal(tc.ExpectedTasks), jsonx.MustMarshal(actual.ExpectedTasks), "%s: unexpected tasks", tc.Label)
 
-			if tc.ExpectedHistory == nil {
-				tc.ExpectedHistory = []*dynamo.Item{}
+			if checkHistory {
+				if tc.ExpectedHistory == nil {
+					tc.ExpectedHistory = []*dynamo.Item{}
+				}
+				test.AssertEqualJSON(t, jsonx.MustMarshal(tc.ExpectedHistory), jsonx.MustMarshal(actual.ExpectedHistory), "%s: event history mismatch", tc.Label)
 			}
-			test.AssertEqualJSON(t, jsonx.MustMarshal(tc.ExpectedHistory), jsonx.MustMarshal(actual.ExpectedHistory), "%s: event history mismatch", tc.Label)
 
-			if tc.IndexedMessages == nil {
-				tc.IndexedMessages = []IndexedMessage{}
+			if checkIndexed {
+				if tc.IndexedMessages == nil {
+					tc.IndexedMessages = []IndexedMessage{}
+				}
+				if actual.IndexedMessages == nil {
+					actual.IndexedMessages = []IndexedMessage{}
+				}
+				test.AssertEqualJSON(t, jsonx.MustMarshal(tc.IndexedMessages), jsonx.MustMarshal(actual.IndexedMessages), "%s: indexed messages mismatch", tc.Label)
 			}
-			if actual.IndexedMessages == nil {
-				actual.IndexedMessages = []IndexedMessage{}
-			}
-			test.AssertEqualJSON(t, jsonx.MustMarshal(tc.IndexedMessages), jsonx.MustMarshal(actual.IndexedMessages), "%s: indexed messages mismatch", tc.Label)
 
 		} else {
 			tcs[i] = actual
@@ -218,6 +233,9 @@ func RunWebTests(t *testing.T, rt *runtime.Runtime, truthFile string) {
 // overwriteTestBucket rewrites this binary's per-binary bucket name (see storage.go) to the stable
 // "test-attachments" so that snapshots don't vary by binary
 func overwriteTestBucket(rt *runtime.Runtime, b []byte) []byte {
+	if rt.Config.S3AttachmentsBucket == "" {
+		return b // storage is switched off (see NanoRP) - and replacing an empty string would insert everywhere
+	}
 	return bytes.ReplaceAll(b, []byte(rt.Config.S3AttachmentsBucket), []byte("test-attachments"))
 }
 

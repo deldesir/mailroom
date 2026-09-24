@@ -101,6 +101,10 @@ func sweepStaleDynamo(ctx context.Context, client *dynamodb.Client) error {
 func ClearDynamo(t *testing.T, rt *runtime.Runtime) {
 	t.Helper()
 
+	if !rt.Dynamo.Enabled() {
+		return // switched off (see NanoRP): nothing to do
+	}
+
 	rt.Dynamo.Main.Flush()
 	rt.Dynamo.History.Flush()
 
@@ -110,6 +114,10 @@ func ClearDynamo(t *testing.T, rt *runtime.Runtime) {
 
 func GetHistoryItems(t *testing.T, rt *runtime.Runtime, clear bool, after time.Time) []*dynamo.Item {
 	t.Helper()
+
+	if !rt.Dynamo.Enabled() {
+		t.Skip("asserts on the DynamoDB history table, which is switched off (see NanoRP)")
+	}
 
 	rt.Dynamo.History.Flush()
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	goruntime "runtime"
+	"sync"
 	"testing"
 
 	"github.com/nyaruka/gocommon/centrifugo"
@@ -23,6 +24,15 @@ func testdataPath(file string) string {
 	_, thisFile, _, _ := goruntime.Caller(0)
 	return path.Join(path.Dir(thisFile), "testdata", file)
 }
+
+// NanoRP returns whether the suite is running against Postgres and Valkey alone, with Elasticsearch, DynamoDB and S3
+// switched off the way a nanoRP deployment switches them off - see runtime.ServiceOff. It's selected by setting
+// MAILROOM_TEST_NANORP in the environment. Searches then run in Postgres, history stays in Postgres, and the helpers
+// which read or write those services either do nothing (indexing, which the database already reflects) or skip the
+// test (assertions on what the services hold).
+var NanoRP = sync.OnceValue(func() bool {
+	return os.Getenv("MAILROOM_TEST_NANORP") != ""
+})
 
 // Runtime returns the various runtime things a test might need
 func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
@@ -59,6 +69,12 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	cfg.DynamoTablePrefix = dynTablePrefix() // this binary's own tables, cleared before every test - see dynamo.go
 	cfg.SpoolDir = t.TempDir()
 
+	if NanoRP() {
+		cfg.ElasticEndpoint = runtime.ServiceOff
+		cfg.DynamoTablePrefix = runtime.ServiceOff
+		cfg.S3AttachmentsBucket = runtime.ServiceOff
+	}
+
 	err := cfg.Parse()
 	require.NoError(t, err)
 
@@ -77,7 +93,7 @@ func Runtime(t *testing.T) (context.Context, *runtime.Runtime) {
 	require.NoError(t, err, "error starting runtime")
 
 	// so every test starts with empty valkey, indexes, tables and storage (writers must be started for
-	// their flushes)
+	// their flushes) - each of which is a no-op for a service that's switched off
 	require.NoError(t, flushVKDB(slotVKDB(slot)))
 	ClearElastic(t, rt)
 	ClearDynamo(t, rt)

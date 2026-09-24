@@ -61,13 +61,21 @@ func setupBinaryResources(rt *runtime.Runtime) error {
 		return fmt.Errorf("error claiming binary resources: %w", err)
 	}
 
-	if err := setupStorage(ctx, rt); err != nil {
-		return err
+	// a service that's switched off (see NanoRP) has no resources to create or sweep
+	if rt.S3 != nil {
+		if err := setupStorage(ctx, rt); err != nil {
+			return err
+		}
 	}
-	if err := setupElastic(ctx, rt); err != nil {
-		return err
+	if rt.ES.Enabled() {
+		if err := setupElastic(ctx, rt); err != nil {
+			return err
+		}
 	}
-	return setupDynamo(ctx, rt)
+	if rt.Dynamo.Enabled() {
+		return setupDynamo(ctx, rt)
+	}
+	return nil
 }
 
 // sweepDeadBinaries deletes per-binary resources, given as names grouped by process identifier, belonging

@@ -72,12 +72,19 @@ var dbTemplate = sync.OnceValues(func() (string, error) {
 	return name, ensureTemplate(context.Background(), name)
 })
 
-// templateName is keyed by the content hash of the dump, so regenerating it automatically builds a new
-// template and leaves the old one to be swept.
+// templateName is keyed by the content hash of the dump - and of the nanoRP additions when those are applied - so
+// regenerating either automatically builds a new template and leaves the old one to be swept.
 func templateName() (string, error) {
 	d, err := os.ReadFile(testdataPath("postgres.dump"))
 	if err != nil {
 		return "", fmt.Errorf("error reading test dump: %w", err)
+	}
+	if NanoRP() {
+		sql, err := os.ReadFile(testdataPath("nanorp.sql"))
+		if err != nil {
+			return "", fmt.Errorf("error reading nanoRP additions: %w", err)
+		}
+		d = append(d, sql...)
 	}
 
 	sum := sha256.Sum256(d)
@@ -144,6 +151,11 @@ func ensureTemplate(ctx context.Context, name string) error {
 		if err := restoreDump(ctx, scratch); err != nil {
 			return err
 		}
+		if NanoRP() {
+			if err := applyNanoRP(ctx, scratch); err != nil {
+				return err
+			}
+		}
 		if err := execDDL(ctx, conn, `ALTER DATABASE %s RENAME TO `+pq.QuoteIdentifier(name), scratch); err != nil {
 			return err
 		}
@@ -182,6 +194,26 @@ func restoreDump(ctx context.Context, dbName string) error {
 		return fmt.Errorf("error restoring dump into %s: %w: %s", dbName, err, string(output))
 	}
 
+	return nil
+}
+
+// applyNanoRP adds to the given database what a nanoRP deployment's database has on top of upstream's schema - the
+// column and indexes that searches in Postgres depend on - see testdata/nanorp.sql
+func applyNanoRP(ctx context.Context, dbName string) error {
+	sql, err := os.ReadFile(testdataPath("nanorp.sql"))
+	if err != nil {
+		return fmt.Errorf("error reading nanoRP additions: %w", err)
+	}
+
+	db, err := sqlx.Open("postgres", fmt.Sprintf(dbTestDSNFormat, dbName))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, string(sql)); err != nil {
+		return fmt.Errorf("error applying nanoRP additions to %s: %w", dbName, err)
+	}
 	return nil
 }
 
