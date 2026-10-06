@@ -104,8 +104,8 @@ func startService(rt *runtime.Runtime) (*service, error) {
 
 	// create the services which are only enabled in some deployments - a failure to create one leaves it nil, which
 	// is how callers know the feature is unavailable, so it must not be assigned to on the error path
-	if c.AndroidCredentialsFile != "" {
-		fcmClient, err := fcm.NewClient(s.ctx, fcm.WithCredentialsFile(c.AndroidCredentialsFile))
+	if c.AndroidCredentials != "" {
+		fcmClient, err := fcm.NewClient(s.ctx, fcm.WithCredentialsJSON([]byte(c.AndroidCredentials)))
 		if err != nil {
 			log.Error("unable to create FCM client", "error", err)
 		} else {
