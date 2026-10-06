@@ -9,6 +9,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/goflow/flows"
 	"github.com/nyaruka/mailroom/v26/core/ai"
@@ -22,11 +23,13 @@ const (
 	configAPIKey = "api_key"
 )
 
-// models which think by default but accept thinking being disabled. Later models don't allow disabling thinking
-// at all and earlier models don't think unless asked to.
-var thinksByDefault = map[string]bool{
-	"claude-opus-5":   true,
-	"claude-sonnet-5": true,
+// how to turn off thinking for models which think by default. Thinking adds latency and its tokens count against
+// MaxTokens, which can truncate what are short responses. Models not listed either don't think unless asked to or
+// don't allow thinking to be turned off.
+var thinkingOff = map[string]anthropic.ThinkingConfigParamUnion{
+	"claude-opus-5":     {OfDisabled: &anthropic.ThinkingConfigDisabledParam{}},
+	"claude-sonnet-5":   {OfDisabled: &anthropic.ThinkingConfigDisabledParam{}},
+	"claude-sonnet-5-5": {OfBetweenTools: &anthropic.ThinkingConfigBetweenToolsParam{}},
 }
 
 func init() {
@@ -35,8 +38,9 @@ func init() {
 
 // an LLM service implementation for Anthropic
 type service struct {
-	client anthropic.Client
-	model  string
+	client          anthropic.Client
+	model           string
+	maxOutputTokens int
 }
 
 func New(rt *runtime.Runtime, m *models.LLM, c *http.Client) (flows.ModelService, error) {
@@ -46,8 +50,9 @@ func New(rt *runtime.Runtime, m *models.LLM, c *http.Client) (flows.ModelService
 	}
 
 	return &service{
-		client: anthropic.NewClient(option.WithAPIKey(apiKey), option.WithHTTPClient(c)),
-		model:  m.Model(),
+		client:          anthropic.NewClient(option.WithAPIKey(apiKey), option.WithHTTPClient(c)),
+		model:           m.Model(),
+		maxOutputTokens: m.MaxOutputTokens(),
 	}, nil
 }
 
@@ -68,9 +73,8 @@ func (s *service) Response(ctx context.Context, instructions, input string, maxT
 		MaxTokens: int64(maxTokens),
 	}
 
-	// thinking adds latency and its tokens count against MaxTokens, which can truncate what are short responses
-	if thinksByDefault[s.model] {
-		params.Thinking = anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
+	if thinking, ok := thinkingOff[s.model]; ok {
+		params.Thinking = thinking
 	}
 
 	resp, err := s.client.Messages.New(ctx, params)
@@ -86,20 +90,17 @@ func (s *service) Response(ctx context.Context, instructions, input string, maxT
 	}
 
 	return &core.ModelResponse{
-		Output:       s.cleanOutput(output.String()),
-		TokensInput:  resp.Usage.InputTokens,
-		TokensOutput: resp.Usage.OutputTokens,
+		Output: s.cleanOutput(output.String()),
+		Tokens: core.ModelTokens{Input: resp.Usage.InputTokens, Output: resp.Usage.OutputTokens},
 	}, nil
 }
 
-// Classify prompts the model, and as the API doesn't provide logprobs, the confidence is approximated.
 func (s *service) Classify(ctx context.Context, input string, options []*core.ClassifierOption) (*core.Classification, error) {
-	resp, err := s.Response(ctx, ai.ClassifyInstructions(options), input, ai.ClassifyMaxTokens)
-	if err != nil {
-		return nil, err
-	}
+	return ai.ClassifyByPrompt(ctx, s, input, options)
+}
 
-	return ai.NewClassification(resp, nil, options)
+func (s *service) Translate(ctx context.Context, source, target i18n.Language, items map[string][]string) (*core.Translation, error) {
+	return ai.TranslateByPrompt(ctx, s, source, target, items, s.maxOutputTokens)
 }
 
 func (s *service) error(err error, instructions, input string) error {

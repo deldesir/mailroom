@@ -86,8 +86,8 @@ type Config struct {
 	CloudwatchNamespace string `help:"the namespace to use for cloudwatch metrics"`
 	DeploymentID        string `help:"the deployment identifier to use for metrics"`
 
-	AndroidCredentialsFile string `help:"path to JSON file with FCM service account credentials used to sync Android relayers"`
-	IDObfuscationKey       string `help:"key used to decode obfuscated IDs, as 4 comma separated integers" validate:"omitempty,hexadecimal,len=32"`
+	AndroidCredentials string `help:"FCM service account credentials JSON used to sync Android relayers" validate:"omitempty,json"`
+	IDObfuscationKey   string `help:"key used to decode obfuscated IDs, as 4 comma separated integers" validate:"omitempty,hexadecimal,len=32"`
 
 	LogLevel slog.Level `help:"the logging level courier should use"`
 	UUIDSeed int        `help:"seed to use for UUID generation in a testing environment"`

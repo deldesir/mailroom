@@ -18,8 +18,8 @@ import (
 func TestService(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	bad := testdb.InsertLLM(t, rt, testdb.Org1, "c69723d8-fb37-4cf6-9ec4-bc40cb36f2cc", "openai_azure", "gpt-4", "Bad Config", map[string]any{}, "TF")
-	good := testdb.InsertLLM(t, rt, testdb.Org1, "b86966fd-206e-4bdd-a962-06faa3af1182", "openai_azure", "gpt-4", "Good", map[string]any{"endpoint": "http://azure.com/ai", "api_key": "sesame"}, "TF")
+	bad := testdb.InsertLLM(t, rt, testdb.Org1, "c69723d8-fb37-4cf6-9ec4-bc40cb36f2cc", "openai_azure", "gpt-4", "Bad Config", map[string]any{}, "TGC")
+	good := testdb.InsertLLM(t, rt, testdb.Org1, "b86966fd-206e-4bdd-a962-06faa3af1182", "openai_azure", "gpt-4", "Good", map[string]any{"endpoint": "http://azure.com/ai", "api_key": "sesame"}, "TGC")
 
 	oa := testdb.Org1.Load(t, rt)
 	badLLM := oa.LLMByID(bad.ID)
@@ -62,7 +62,7 @@ func TestService(t *testing.T) {
 func TestClassify(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	llm := testdb.InsertLLM(t, rt, testdb.Org1, "b86966fd-206e-4bdd-a962-06faa3af1182", "openai_azure", "gpt-4", "Good", map[string]any{"api_key": "sesame", "endpoint": "http://azure.com/ai"}, "TF")
+	llm := testdb.InsertLLM(t, rt, testdb.Org1, "b86966fd-206e-4bdd-a962-06faa3af1182", "openai_azure", "gpt-4", "Good", map[string]any{"api_key": "sesame", "endpoint": "http://azure.com/ai"}, "TGC")
 	oa := testdb.Org1.Load(t, rt)
 
 	mkResp := func(content, logprobs string) *httpx.MockResponse {
@@ -82,9 +82,9 @@ func TestClassify(t *testing.T) {
 	cls, err := svc.Classify(ctx, "I need a room", []*core.ClassifierOption{{Name: "Flights"}, {Name: "Hotels"}})
 	require.NoError(t, err)
 	assert.Equal(t, "Hotels", cls.Option)
-	assert.InDelta(t, 0.8607, cls.Confidence, 0.0001)
-	assert.Equal(t, int64(34), cls.TokensInput)
-	assert.Equal(t, int64(2), cls.TokensOutput)
+	assert.Equal(t, core.ClassifierConfidenceMedium, cls.Confidence)
+	assert.Equal(t, int64(34), cls.Tokens.Input)
+	assert.Equal(t, int64(2), cls.Tokens.Output)
 
 	body, err := mocks.Requests()[0].GetBody()
 	require.NoError(t, err)
@@ -92,7 +92,8 @@ func TestClassify(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(reqBody), `"logprobs":true`)
 
+	// none of the options fit
 	cls, err = svc.Classify(ctx, "What's the weather?", []*core.ClassifierOption{{Name: "Flights"}, {Name: "Hotels"}})
-	assert.EqualError(t, err, "no option fits input")
-	assert.Nil(t, cls)
+	require.NoError(t, err)
+	assert.Equal(t, &core.Classification{Option: "Flights", Confidence: core.ClassifierConfidenceNone, Tokens: core.ModelTokens{Input: 34, Output: 2}}, cls)
 }

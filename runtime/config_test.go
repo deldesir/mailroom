@@ -52,6 +52,15 @@ func TestConfigParse(t *testing.T) {
 	cfg = runtime.NewDefaultConfig()
 	cfg.ElasticEndpoint = ""
 	assert.NoError(t, cfg.Parse())
+
+	// FCM credentials must at least be JSON
+	cfg = runtime.NewDefaultConfig()
+	cfg.AndroidCredentials = `{"type": "service_account", "project_id": "foo"}`
+	assert.NoError(t, cfg.Parse())
+
+	cfg = runtime.NewDefaultConfig()
+	cfg.AndroidCredentials = `{"type": "service_account"`
+	assert.EqualError(t, cfg.Parse(), "invalid configuration: field 'AndroidCredentials' failed tag 'json'")
 }
 
 func TestDisallowedNetworksParsing(t *testing.T) {
