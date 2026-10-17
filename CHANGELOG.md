@@ -1,3 +1,38 @@
+## v26.3.99 (2026-10-15)
+ * Extend task leases while workers are still running them, and shorten the lease duration to 5 minutes
+
+## v26.3.98 (2026-10-15)
+ * Extract the first complete JSON object from model output so braces in surrounding text don't break scored classification
+ * Give scored classify room for a preamble and ask for no text besides the JSON
+
+## v26.3.97 (2026-10-15)
+ * Add cron to reconcile task queues' active counts with their leases, reporting slots released and claimed separately
+
+## v26.3.96 (2026-10-14)
+ * Skip prompt-based translation to unrecognized languages and special codes like und and zxx, and accept quoted or fenced <CANT>
+ * Share code fence stripping across model output parsing and export it as StripFence for reuse by other services
+
+## v26.3.95 (2026-10-14)
+ * Update gocommon and OpenTelemetry SDK dependencies
+
+## v26.3.94 (2026-10-14)
+ * Set reasoning effort for every offered OpenAI model and classify by prompt when reasoning can't be turned off
+
+## v26.3.93 (2026-10-13)
+ * Turn off reasoning for known OpenAI reasoning models and error on empty truncated output
+ * Stop sending temperature to OpenAI LLM services
+ * Update to latest goflow
+
+## v26.3.92 (2026-10-13)
+ * Export runtime.NewServicesClient
+
+## v26.3.91 (2026-10-13)
+ * Accept typing publications from webchat visitors on their chat sockets
+ * Mask expressions as placeholders when translating
+
+## v26.3.90 (2026-10-12)
+ * Name languages in translate prompts
+
 ## v26.3.89 (2026-10-05)
  * Stop referencing removed audit fields on contact imports and boundary aliases
  * Disable review progress tracking and bump the review model to Opus 5.5

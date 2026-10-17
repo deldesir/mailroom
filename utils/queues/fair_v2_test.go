@@ -65,9 +65,19 @@ func TestFairV2(t *testing.T) {
 	assertOwners([]int{1, 2})
 	assertSize(2)
 
+	assert.Equal(t, time.Minute, q.Lease())
+
+	extended, err := q.Extend(ctx, vc, task2)
+	assert.NoError(t, err)
+	assert.True(t, extended)
+
 	// mark task2 and task1 (owner 1) as complete
 	assert.NoError(t, q.Done(ctx, vc, task2))
 	assert.NoError(t, q.Done(ctx, vc, task1))
+
+	extended, err = q.Extend(ctx, vc, task2)
+	assert.NoError(t, err)
+	assert.False(t, extended)
 
 	task4 := assertPop(1, `"task4"`)
 	task3 := assertPop(2, `"task3"`)
@@ -102,6 +112,26 @@ func TestFairV2(t *testing.T) {
 		assert.NoError(t, q.Done(ctx, vc, task))
 	}
 
+	assertvk.ZGetAll(t, vc, "{tasks:test}:active", map[string]float64{})
+	assertvk.HLen(t, vc, "{tasks:test}:leases", 0)
+}
+
+func TestFairV2UndecodableTask(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	q := queues.NewFair("test", 10, time.Minute)
+
+	_, err := vc.Do("RPUSH", "{tasks:test}:o:1/0", "01980000-0000-7000-8000-000000000001|not json")
+	require.NoError(t, err)
+	_, err = vc.Do("ZADD", "{tasks:test}:queued", 1, "1")
+	require.NoError(t, err)
+
+	_, err = q.Pop(ctx, vc)
+	assert.Error(t, err)
+
+	// task doesn't hold a slot
 	assertvk.ZGetAll(t, vc, "{tasks:test}:active", map[string]float64{})
 	assertvk.HLen(t, vc, "{tasks:test}:leases", 0)
 }
