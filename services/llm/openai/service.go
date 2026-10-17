@@ -25,7 +25,37 @@ const (
 
 	configAPIKey   = "api_key"
 	configEndpoint = "endpoint"
+
+	// the reasoning effort of models which don't reason and so reject a reasoning param
+	reasoningEffortOmit shared.ReasoningEffort = ""
 )
+
+// the reasoning effort to use with each model. Reasoning adds latency and its tokens count against MaxOutputTokens,
+// which can use up the budget of what are short responses, so it's turned off where possible, which also keeps logprobs
+// available. Models which can't turn it off use their lowest effort, and unlisted models are assumed to be able to.
+var reasoningEfforts = map[string]shared.ReasoningEffort{
+	"gpt-6.1-sol":   shared.ReasoningEffortLow,
+	"gpt-6-astra":   shared.ReasoningEffortLow,
+	"gpt-6-sol":     shared.ReasoningEffortNone,
+	"gpt-6-luna":    shared.ReasoningEffortNone,
+	"gpt-5.6-sol":   shared.ReasoningEffortNone,
+	"gpt-5.6-terra": shared.ReasoningEffortNone,
+	"gpt-5.6-luna":  shared.ReasoningEffortNone,
+	"gpt-5.5":       shared.ReasoningEffortNone,
+	"gpt-5.4":       shared.ReasoningEffortNone,
+	"gpt-5.4-mini":  shared.ReasoningEffortNone,
+	"gpt-4.1":       reasoningEffortOmit,
+	"gpt-4.1-mini":  reasoningEffortOmit,
+	"gpt-4o":        reasoningEffortOmit,
+	"gpt-4o-mini":   reasoningEffortOmit,
+}
+
+func reasoningEffort(model string) shared.ReasoningEffort {
+	if effort, ok := reasoningEfforts[model]; ok {
+		return effort
+	}
+	return shared.ReasoningEffortNone
+}
 
 func init() {
 	models.RegisterLLMService(TypeOpenAI, New)
@@ -67,6 +97,11 @@ func (s *service) Response(ctx context.Context, instructions, input string, maxT
 }
 
 func (s *service) Classify(ctx context.Context, input string, options []*core.ClassifierOption) (*core.Classification, error) {
+	// models which are reasoning can't provide logprobs
+	if effort := reasoningEffort(s.model); effort != shared.ReasoningEffortNone && effort != reasoningEffortOmit {
+		return ai.ClassifyByPrompt(ctx, s, input, options)
+	}
+
 	resp, logprobs, err := s.respond(ctx, ai.ClassifyInstructions(options), input, ai.ClassifyMaxTokens, true)
 	if err != nil {
 		return nil, err
@@ -87,8 +122,10 @@ func (s *service) respond(ctx context.Context, instructions, input string, maxTo
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(input),
 		},
-		Temperature:     openai.Float(0.000001),
 		MaxOutputTokens: openai.Int(int64(maxTokens)),
+	}
+	if effort := reasoningEffort(s.model); effort != reasoningEffortOmit {
+		params.Reasoning = shared.ReasoningParam{Effort: effort}
 	}
 	if withLogprobs {
 		params.Include = []responses.ResponseIncludable{responses.ResponseIncludableMessageOutputTextLogprobs}
@@ -97,6 +134,12 @@ func (s *service) respond(ctx context.Context, instructions, input string, maxTo
 	resp, err := s.client.Responses.New(ctx, params)
 	if err != nil {
 		return nil, nil, s.error(err, instructions, input)
+	}
+
+	output := strings.TrimSpace(resp.OutputText())
+	if output == "" && resp.Status == responses.ResponseStatusIncomplete {
+		msg := fmt.Sprintf("response incomplete with no output: %s", resp.IncompleteDetails.Reason)
+		return nil, nil, &ai.ServiceError{Message: msg, Code: ai.ErrorUnknown, Instructions: instructions, Input: input}
 	}
 
 	var logprobs []float64
@@ -109,7 +152,7 @@ func (s *service) respond(ctx context.Context, instructions, input string, maxTo
 	}
 
 	return &core.ModelResponse{
-		Output: strings.TrimSpace(resp.OutputText()),
+		Output: output,
 		Tokens: core.ModelTokens{Input: resp.Usage.InputTokens, Output: resp.Usage.OutputTokens},
 	}, logprobs, nil
 }

@@ -20,6 +20,11 @@ import (
 // ClassifyMaxTokens is the output limit for the classify instructions, which only needs to fit an option name.
 const ClassifyMaxTokens = 50
 
+// classifyScoredMaxTokens is the output limit for the scored classify instructions, before allowing for the options.
+// It leaves room for a model that writes a sentence or two before the JSON despite being told not to, which would
+// otherwise be cut off before the JSON is complete.
+const classifyScoredMaxTokens = 200
+
 // UnscoredConfidence is the confidence given to an option chosen by a model which was expected to provide logprobs
 // but didn't. The model could have declined to choose so its choice is taken as likely, but not as certain.
 const UnscoredConfidence = core.ClassifierConfidenceMedium
@@ -44,9 +49,6 @@ func ConfidenceLevel(p float64) core.ClassifierConfidence {
 	return core.ClassifierConfidenceNone
 }
 
-// the model's reply to the classify instructions when none of the options fit
-const cantOutput = "<CANT>"
-
 // ClassifyInstructions returns the instructions for prompting a generative model to reply with the name of an option,
 // for services whose API provides the logprobs of the reply.
 func ClassifyInstructions(options []*core.ClassifierOption) string {
@@ -59,7 +61,7 @@ func NewClassification(resp *core.ModelResponse, logprobs []float64, options []*
 	cls := &core.Classification{Option: options[0].Name, Confidence: core.ClassifierConfidenceNone, Tokens: resp.Tokens}
 
 	// the model can't tell us which option comes closest so we can only give no confidence in any of them
-	if normalizeOption(resp.Output) == cantOutput {
+	if isCant(resp.Output) {
 		return cls, nil
 	}
 
@@ -79,8 +81,8 @@ func NewClassification(resp *core.ModelResponse, logprobs []float64, options []*
 func ClassifyByPrompt(ctx context.Context, svc flows.ModelService, input string, options []*core.ClassifierOption) (*core.Classification, error) {
 	instructions := prompts.Render("classify_scored", map[string]any{"Options": options})
 
-	// allow for each option name, its probability and the JSON punctuation
-	resp, err := svc.Response(ctx, instructions, input, ClassifyMaxTokens+20*len(options))
+	// allow for a preamble, and each option name, its probability and the JSON punctuation
+	resp, err := svc.Response(ctx, instructions, input, classifyScoredMaxTokens+20*len(options))
 	if err != nil {
 		return nil, err
 	}
@@ -97,15 +99,6 @@ func ClassifyByPrompt(ctx context.Context, svc flows.ModelService, input string,
 		}
 	}
 	return &core.Classification{Option: option, Confidence: ConfidenceLevel(best), Probabilities: probs, Tokens: resp.Tokens}, nil
-}
-
-// extracts the JSON object from model output, as models sometimes wrap JSON in code fences or other text
-func jsonObject(output string) string {
-	start, end := strings.Index(output, "{"), strings.LastIndex(output, "}")
-	if start < 0 || end < start {
-		return ""
-	}
-	return output[start : end+1]
 }
 
 // parses the JSON object of option probabilities from the output of the scored classify instructions, filling in any
@@ -142,7 +135,7 @@ func parseProbabilities(output string, options []*core.ClassifierOption) (map[st
 	return probs, nil
 }
 
-func normalizeOption(s string) string { return strings.Trim(strings.TrimSpace(s), `"'.`) }
+func normalizeOption(s string) string { return strings.Trim(StripFence(s), `"'.`) }
 
 // matches a model's output against the option names, returning empty if there's no match
 func matchOption(output string, options []*core.ClassifierOption) string {
