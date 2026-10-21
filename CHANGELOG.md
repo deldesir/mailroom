@@ -1,3 +1,16 @@
+## v26.3.102 (2026-10-21)
+ * Record skipped campaign points in contact history and recent fires
+
+## v26.3.101 (2026-10-20)
+ * Bound the worker's queue operations with deadlines and update to vkutil v0.30.0 for pool timeouts
+ * Strip /* */ author notes from articles before chunking them for the index
+
+## v26.3.100 (2026-10-19)
+ * Auto-close tickets that have been inactive for a configured number of days
+ * Record ticket replies in the msg scene transaction, only for open tickets
+ * Don't bump ticket last activity on topic changes or notes, and never let it move backwards when updating tickets
+ * Don't report a request failing because its client went away as an error
+
 ## v26.3.99 (2026-10-15)
  * Extend task leases while workers are still running them, and shorten the lease duration to 5 minutes
 

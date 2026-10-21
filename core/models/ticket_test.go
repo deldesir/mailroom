@@ -137,10 +137,16 @@ func TestTicketRecordReply(t *testing.T) {
 
 	ticket := testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-717a-a39e-e8ca91fb7262", testdb.Org1, testdb.Ann, testdb.DefaultTopic, openedOn, nil)
 
-	err = models.RecordTicketReply(ctx, rt.DB, oa, ticket.UUID, testdb.Agent.ID, repliedOn)
+	modelTicket := ticket.Load(t, rt, testdb.Org1)
+
+	err = models.RecordTicketReply(ctx, rt.DB, oa, modelTicket, testdb.Agent.ID, repliedOn)
 	assert.NoError(t, err)
 
-	modelTicket := ticket.Load(t, rt, testdb.Org1)
+	// in-memory ticket is updated
+	assert.Equal(t, repliedOn, *modelTicket.RepliedOn)
+	assert.Equal(t, repliedOn, modelTicket.LastActivityOn)
+
+	modelTicket = ticket.Load(t, rt, testdb.Org1)
 	assert.Equal(t, repliedOn, *modelTicket.RepliedOn)
 	assert.Equal(t, repliedOn, modelTicket.LastActivityOn)
 
@@ -160,8 +166,11 @@ func TestTicketRecordReply(t *testing.T) {
 	repliedAgainOn := time.Date(2022, 5, 18, 15, 5, 0, 0, time.UTC)
 
 	// if we call it again, it won't change replied_on again but it will update last_activity_on
-	err = models.RecordTicketReply(ctx, rt.DB, oa, ticket.UUID, testdb.Agent.ID, repliedAgainOn)
+	err = models.RecordTicketReply(ctx, rt.DB, oa, modelTicket, testdb.Agent.ID, repliedAgainOn)
 	assert.NoError(t, err)
+
+	assert.Equal(t, repliedOn, *modelTicket.RepliedOn)
+	assert.Equal(t, repliedAgainOn, modelTicket.LastActivityOn)
 
 	modelTicket = ticket.Load(t, rt, testdb.Org1)
 	assert.Equal(t, repliedOn, *modelTicket.RepliedOn)
@@ -175,4 +184,44 @@ func TestTicketRecordReply(t *testing.T) {
 		openYmd + "/ticketresptime:total":        88740,
 		openYmd + "/ticketresptime:count":        1,
 	})
+}
+
+func TestGetInactiveTickets(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	longAgo := time.Now().Add(-30 * 24 * time.Hour)
+	recently := time.Now().Add(-1 * time.Hour)
+	olderThan := time.Now().Add(-14 * 24 * time.Hour)
+
+	ticket1 := testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-717a-a39e-e8ca91fb7262", testdb.Org1, testdb.Ann, testdb.DefaultTopic, longAgo.Add(time.Hour), nil)
+	ticket2 := testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-725e-be9c-0c6407efd755", testdb.Org1, testdb.Bob, testdb.DefaultTopic, longAgo, nil)
+	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-7498-a7f2-6aa246e45cfe", testdb.Org1, testdb.Cat, testdb.DefaultTopic, recently, nil)
+	testdb.InsertClosedTicket(t, rt, "01992f54-5ab6-7658-a5d4-bdb05863ec56", testdb.Org1, testdb.Dan, testdb.DefaultTopic, nil)
+
+	// ordered by last activity
+	tickets, err := models.GetInactiveTickets(ctx, rt.DB, olderThan, 10)
+	assert.NoError(t, err)
+	assert.Equal(t, []models.TicketID{ticket2.ID, ticket1.ID}, inactiveTicketIDs(tickets))
+	assert.Equal(t, testdb.Bob.ID, tickets[0].ContactID)
+	assert.Equal(t, testdb.Org1.ID, tickets[0].OrgID)
+
+	// limited to the oldest
+	tickets, err = models.GetInactiveTickets(ctx, rt.DB, olderThan, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, []models.TicketID{ticket2.ID}, inactiveTicketIDs(tickets))
+
+	// tickets in inactive orgs are ignored
+	rt.DB.MustExec(`UPDATE orgs_org SET is_active = FALSE WHERE id = $1`, testdb.Org1.ID)
+
+	tickets, err = models.GetInactiveTickets(ctx, rt.DB, olderThan, 10)
+	assert.NoError(t, err)
+	assert.Len(t, tickets, 0)
+}
+
+func inactiveTicketIDs(tickets []*models.InactiveTicket) []models.TicketID {
+	ids := make([]models.TicketID, len(tickets))
+	for i, t := range tickets {
+		ids[i] = t.ID
+	}
+	return ids
 }
