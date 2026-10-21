@@ -176,6 +176,31 @@ func InsertTickets(ctx context.Context, tx DBorTx, oa *OrgAssets, tickets []*Tic
 	return nil
 }
 
+// InactiveTicket is an open ticket that has had no activity since a given time
+type InactiveTicket struct {
+	ID        TicketID  `db:"id"`
+	OrgID     OrgID     `db:"org_id"`
+	ContactID ContactID `db:"contact_id"`
+}
+
+const sqlSelectInactiveTickets = `
+    SELECT t.id, t.org_id, t.contact_id
+      FROM tickets_ticket t
+INNER JOIN orgs_org o ON o.id = t.org_id
+     WHERE t.status = 'O' AND t.last_activity_on < $1 AND o.is_active
+  ORDER BY t.last_activity_on
+     LIMIT $2`
+
+// GetInactiveTickets gets up to limit open tickets across all orgs that have had no activity since the given time,
+// oldest activity first.
+func GetInactiveTickets(ctx context.Context, db DBorTx, olderThan time.Time, limit int) ([]*InactiveTicket, error) {
+	tickets := make([]*InactiveTicket, 0, limit)
+	if err := db.SelectContext(ctx, &tickets, sqlSelectInactiveTickets, olderThan, limit); err != nil {
+		return nil, fmt.Errorf("error selecting inactive tickets: %w", err)
+	}
+	return tickets, nil
+}
+
 // UpdateTicketLastActivity updates the last_activity_on of the given tickets to be now
 func UpdateTicketLastActivity(ctx context.Context, db DBorTx, tickets []*Ticket) error {
 	now := dates.Now()
@@ -194,7 +219,7 @@ UPDATE tickets_ticket t
    SET status = r.status,
        assignee_id = r.assignee_id,
        topic_id = r.topic_id,
-       last_activity_on = r.last_activity_on,
+       last_activity_on = GREATEST(t.last_activity_on, r.last_activity_on),
 	   closed_on = r.closed_on,
        modified_on = NOW()
   FROM (VALUES(:id::int, :status, :assignee_id::int, :topic_id::int, :last_activity_on::timestamptz, :closed_on::timestamptz)) AS r(id, status, assignee_id, topic_id, last_activity_on, closed_on)
@@ -212,36 +237,20 @@ const sqlUpdateTicketRepliedOn = `
    UPDATE tickets_ticket t1
       SET last_activity_on = $2, replied_on = LEAST(t1.replied_on, $2)
 	 FROM tickets_ticket t2
-    WHERE t1.id = t2.id AND t1.uuid = $1
+    WHERE t1.id = t2.id AND t1.id = $1
 RETURNING CASE WHEN t2.replied_on IS NULL THEN t1.opened_on ELSE NULL END`
 
-// TicketRecordReplied records a ticket as being replied to, updating last_activity_on. If this is the first reply
-// to this ticket then replied_on is updated and the function returns the time the ticket was opened.
-func TicketRecordReplied(ctx context.Context, db DBorTx, ticketUUID core.TicketUUID, when time.Time) (*time.Time, error) {
-	rows, err := db.QueryxContext(ctx, sqlUpdateTicketRepliedOn, ticketUUID, when)
-	if err != nil && err != sql.ErrNoRows {
-		return nil, err
-	}
-
-	defer rows.Close()
-
-	// if we didn't get anything back then we didn't change the ticket because it was already replied to
-	if err == sql.ErrNoRows || !rows.Next() {
-		return nil, nil
-	}
-
+// RecordTicketReply records a reply by a user to the given ticket, updating last_activity_on and, if this is the first
+// reply, replied_on. Also records the reply count and, for a first reply, the response time.
+func RecordTicketReply(ctx context.Context, db DBorTx, oa *OrgAssets, ticket *Ticket, userID UserID, when time.Time) error {
 	var openedOn *time.Time
-	if err := rows.Scan(&openedOn); err != nil {
-		return nil, err
+	if err := db.GetContext(ctx, &openedOn, sqlUpdateTicketRepliedOn, ticket.ID, when); err != nil {
+		return fmt.Errorf("error updating ticket replied_on: %w", err)
 	}
 
-	return openedOn, nil
-}
-
-func RecordTicketReply(ctx context.Context, db DBorTx, oa *OrgAssets, ticketUUID core.TicketUUID, userID UserID, when time.Time) error {
-	openedOn, err := TicketRecordReplied(ctx, db, ticketUUID, when)
-	if err != nil {
-		return err
+	ticket.LastActivityOn = when
+	if ticket.RepliedOn == nil || when.Before(*ticket.RepliedOn) {
+		ticket.RepliedOn = &when
 	}
 
 	teamID := NilTeamID
