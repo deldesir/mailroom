@@ -171,13 +171,12 @@ func TestSQLConverterQuery(t *testing.T) {
 		{query: `history = ""`, sql: `NOT EXISTS (SELECT 1 FROM flows_flowrun r WHERE r.contact_id = c.id)`, args: []any{}},
 		{query: `history != ""`, sql: `EXISTS (SELECT 1 FROM flows_flowrun r WHERE r.contact_id = c.id)`, args: []any{}},
 
-		// tickets is the count of open tickets
-		{query: `tickets = 2`, sql: `c.ticket_count = $1::numeric`, args: []any{"2"}},
-		{query: `tickets != 0`, sql: `c.ticket_count != $1::numeric`, args: []any{"0"}},
-		{query: `tickets > 0`, sql: `c.ticket_count > $1::numeric`, args: []any{"0"}},
-		{query: `tickets >= 1`, sql: `c.ticket_count >= $1::numeric`, args: []any{"1"}},
-		{query: `tickets < 3`, sql: `c.ticket_count < $1::numeric`, args: []any{"3"}},
-		{query: `tickets <= 3`, sql: `c.ticket_count <= $1::numeric`, args: []any{"3"}},
+		// ticket is the status of the contact's one non-closed ticket
+		{query: `ticket = "open"`, sql: `EXISTS (SELECT 1 FROM tickets_ticket t WHERE t.contact_id = c.id AND t.status = $1)`, args: []any{"O"}},
+		{query: `ticket != "open"`, sql: `NOT EXISTS (SELECT 1 FROM tickets_ticket t WHERE t.contact_id = c.id AND t.status = $1)`, args: []any{"O"}},
+		{query: `ticket = "pending"`, sql: `EXISTS (SELECT 1 FROM tickets_ticket t WHERE t.contact_id = c.id AND t.status = $1)`, args: []any{"P"}},
+		// tickets (deprecated) is rewritten by the parser into a ticket condition before it reaches the converter
+		{query: `tickets > 0`, sql: `EXISTS (SELECT 1 FROM tickets_ticket t WHERE t.contact_id = c.id AND t.status = $1)`, args: []any{"O"}},
 
 		// number fields
 		{query: `age = 30`, sql: `(c.fields->$1->>'number')::numeric = $2`, args: []any{ageUUID, "30"}},

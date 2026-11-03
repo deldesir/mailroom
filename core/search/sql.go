@@ -18,6 +18,11 @@ import (
 	"github.com/nyaruka/mailroom/v26/core/models"
 )
 
+const (
+	openTicketExists = "EXISTS (SELECT 1 FROM tickets_ticket t WHERE t.contact_id = c.id AND t.status IN ('O', 'P'))"
+	openTicketCount  = "(SELECT count(*) FROM tickets_ticket t WHERE t.contact_id = c.id AND t.status IN ('O', 'P'))"
+)
+
 // SQLConverter converts contactql queries and sorts to SQL over contacts_contact (aliased as c) with the same
 // semantics as goflow's Elastic converter has over the contacts index: text comparisons are case insensitive, dates
 // match whole days in the org's timezone, and != conditions match contacts without a value. Values are always bound
@@ -200,13 +205,22 @@ func (c *SQLConverter) attributeCondition(resolver contactql.Resolver, cond *con
 		ran := fmt.Sprintf("EXISTS (SELECT 1 FROM flows_flowrun r WHERE r.contact_id = c.id AND r.flow_id = %s)", c.param(c.assets.Flow(flow)))
 		return c.exists(cond, ran)
 
+	case contactql.AttributeTicket:
+		// the contact's one non-closed ticket (one per contact since tickets 0097): the parser only lets
+		// "open" and "pending" through; anything else is taken as "has one at all"
+		status := map[string]models.TicketStatus{"open": models.TicketStatusOpen, "pending": models.TicketStatusPending}[strings.ToLower(value)]
+		if status == "" {
+			return negateIf(cond.Operator() == contactql.OpEqual, openTicketExists), nil
+		}
+		return c.exists(cond, fmt.Sprintf("EXISTS (SELECT 1 FROM tickets_ticket t WHERE t.contact_id = c.id AND t.status = %s)", c.param(string(status))))
+
 	case contactql.AttributeTickets:
+		// deprecated count of the contact's open tickets: contacts no longer carry a count column, so it is derived
 		num, err := cond.ValueAsNumber()
 		if err != nil {
 			return "", fmt.Errorf("can't convert '%s' to a number", value)
 		}
-		// ticket_count is an integer column so the parameter is cast rather than left to inference
-		return c.compare(cond, "c.ticket_count", c.param(num.Native().String())+"::numeric", false)
+		return c.compare(cond, openTicketCount, c.param(num.Native().String())+"::numeric", false)
 	}
 
 	return "", unsupportedOperator(cond)
