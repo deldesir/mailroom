@@ -54,7 +54,7 @@ type ContactDoc struct {
 	GroupIDs       []models.GroupID     `json:"group_ids,omitempty"`
 	FlowID         models.FlowID        `json:"flow_id,omitempty"`
 	FlowHistoryIDs []models.FlowID      `json:"flow_history_ids,omitempty"`
-	Tickets        int                  `json:"tickets"`
+	Ticket         string               `json:"ticket,omitempty"`
 	CreatedOn      time.Time            `json:"created_on"`
 	LastSeenOn     *time.Time           `json:"last_seen_on,omitempty"`
 }
@@ -72,9 +72,12 @@ func NewContactDoc(oa *models.OrgAssets, c *core.Contact, currentFlowID models.F
 		Email:          c.Email(),
 		CreatedOn:      c.CreatedOn(),
 		LastSeenOn:     c.LastSeenOn(),
-		Tickets:        c.Tickets().Open().Count(),
 		FlowID:         currentFlowID,
 		FlowHistoryIDs: flowHistoryIDs,
+	}
+
+	if active := c.Tickets().Active(); active != nil {
+		doc.Ticket = string(active.Status())
 	}
 
 	// build field docs from the engine contact's field values

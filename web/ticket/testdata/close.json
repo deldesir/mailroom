@@ -28,7 +28,20 @@
                             "name": "Andy Admin"
                         },
                         "_via": "api",
-                        "ticket_uuid": "01992f54-5ab6-717a-a39e-e8ca91fb7262"
+                        "ticket_uuid": "01992f54-5ab6-717a-a39e-e8ca91fb7262",
+                        "outcome": "resolved"
+                    },
+                    {
+                        "uuid": "01969b47-0d53-76f8-98c7-1f0d5859f77e",
+                        "type": "contact_groups_changed",
+                        "created_on": "2025-05-04T12:30:48.123456789Z",
+                        "_via": "api",
+                        "groups_removed": [
+                            {
+                                "uuid": "361838c4-2866-495a-8990-9f3c222a7604",
+                                "name": "Open Tickets"
+                            }
+                        ]
                     }
                 ]
             }
@@ -41,6 +54,14 @@
             {
                 "query": "SELECT count(*) FROM tickets_ticket WHERE status = 'C'",
                 "returns": 2
+            },
+            {
+                "query": "SELECT count(*) FROM tickets_ticket WHERE status = 'C' AND outcome = 'R'",
+                "returns": 1
+            },
+            {
+                "query": "SELECT scope FROM contacts_contactfire WHERE fire_type = 'K'",
+                "returns": "01992f54-5ab6-725e-be9c-0c6407efd755"
             }
         ],
         "expected_tasks": {
@@ -65,8 +86,26 @@
                     },
                     "_via": "api",
                     "created_on": "2025-05-04T12:30:46.123456789Z",
+                    "outcome": "resolved",
                     "ticket_uuid": "01992f54-5ab6-717a-a39e-e8ca91fb7262",
                     "type": "ticket_closed"
+                }
+            },
+            {
+                "PK": "con#a393abc0-283d-4c9b-a1b3-641a035c34bf",
+                "SK": "evt#01969b47-0d53-76f8-98c7-1f0d5859f77e",
+                "OrgID": 1,
+                "TTL": "2026-05-04T12:30:48Z",
+                "Data": {
+                    "_via": "api",
+                    "created_on": "2025-05-04T12:30:48.123456789Z",
+                    "groups_removed": [
+                        {
+                            "name": "Open Tickets",
+                            "uuid": "361838c4-2866-495a-8990-9f3c222a7604"
+                        }
+                    ],
+                    "type": "contact_groups_changed"
                 }
             }
         ]

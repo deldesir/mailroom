@@ -1,3 +1,69 @@
+## v26.3.120 (2026-11-02)
+ * Leave tallying of LLM usage to LLM services
+
+## v26.3.119 (2026-11-02)
+ * Use gocommon's tallies package with an orgs_tally store
+ * Reject the reserved generation scope in TallyStore.Write
+ * Tally LLM usage by the time of the call and keep daily tallies for 90 days
+
+## v26.3.118 (2026-11-02)
+ * Add Valkey-buffered tallies and count emails sent with the shared configuration
+
+## v26.3.117 (2026-11-02)
+ * Record outcome of closed tickets
+ * Test that flow replies are queued with the contact's updated last seen on
+
+## v26.3.116 (2026-10-30)
+ * Stop writing tickets count to contact search docs and remove tickets from test contacts index mapping
+
+## v26.3.115 (2026-10-29)
+ * Update to goflow v0.303.3
+ * Use ticket condition instead of deprecated tickets in ticket handler tests
+
+## v26.3.114 (2026-10-29)
+ * Remove ticket closed trigger dedupe for contacts with multiple open tickets
+ * Stop writing contacts_contact.ticket_count when inserting contacts
+ * Regenerate test database dump and keep test contacts to one open ticket each
+
+## v26.3.113 (2026-10-29)
+ * Update to goflow v0.303.2 and map pending tickets to the engine's pending status
+ * Only exclude explicit contacts with open tickets
+
+## v26.3.112 (2026-10-29)
+ * Add --tickets flag to mrelastic index contacts to only re-index contacts with active tickets
+
+## v26.3.111 (2026-10-29)
+ * Write active ticket status to contact docs as ticket field
+ * Reindex contacts when their tickets are opened, closed or reopened
+
+## v26.3.110 (2026-10-28)
+ * Load contacts' pending and open tickets with their real status
+ * Update to goflow v0.303.1 and update other dependencies
+
+## v26.3.109 (2026-10-27)
+ * Exclude contacts with open tickets from non-background flow starts
+
+## v26.3.108 (2026-10-22)
+ * Classify with OpenAI's Decisions API for models which support it
+
+## v26.3.107 (2026-10-22)
+ * Remove polling auto-close of inactive tickets
+
+## v26.3.106 (2026-10-22)
+ * Close inactive tickets via per-ticket contact fires using each workspace's idle limit
+
+## v26.3.105 (2026-10-22)
+ * Add ticket_triggers org feature to let triggers fire for contacts with open tickets
+
+## v26.3.104 (2026-10-21)
+ * Default TicketMaxIdleDays to 30
+
+## v26.3.103 (2026-10-21)
+ * Fire closed ticket triggers only once per contact, running background flows only for automatic closes and excluding those closes from counting as activity
+ * Ignore triggers for contacts with open tickets
+ * Update to goflow v0.302.0
+ * Let the clock be offset in a testing environment
+
 ## v26.3.102 (2026-10-21)
  * Record skipped campaign points in contact history and recent fires
 

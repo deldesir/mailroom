@@ -123,21 +123,25 @@ func (e *LimitReachedError) Error() string {
 const (
 	// FeatureUnrestrictedWebhooks allows an org's flows to call webhook URLs which are otherwise blocked
 	FeatureUnrestrictedWebhooks = "unrestricted_webhooks"
+
+	// FeatureTicketTriggers allows triggers to fire for contacts with open tickets
+	FeatureTicketTriggers = "ticket_triggers"
 )
 
 // Org is mailroom's type for RapidPro orgs. It also implements the envs.Environment interface for GoFlow
 type Org struct {
 	o struct {
-		UUID            OrgUUID        `json:"uuid"`
-		ID              OrgID          `json:"id"`
-		ParentID        OrgID          `json:"parent_id"`
-		Name            string         `json:"name"`
-		Suspended       bool           `json:"is_suspended"`
-		Features        []string       `json:"features"`
-		FlowSMTP        null.String    `json:"flow_smtp"`
-		PrometheusToken null.String    `json:"prometheus_token"`
-		Config          map[string]any `json:"config"`
-		Limits          map[string]int `json:"limits"`
+		UUID              OrgUUID        `json:"uuid"`
+		ID                OrgID          `json:"id"`
+		ParentID          OrgID          `json:"parent_id"`
+		Name              string         `json:"name"`
+		Suspended         bool           `json:"is_suspended"`
+		Features          []string       `json:"features"`
+		FlowSMTP          null.String    `json:"flow_smtp"`
+		PrometheusToken   null.String    `json:"prometheus_token"`
+		Config            map[string]any `json:"config"`
+		Limits            map[string]int `json:"limits"`
+		MaxTicketIdleDays int            `json:"max_ticket_idle_days"`
 	}
 	env envs.Environment
 }
@@ -184,6 +188,10 @@ func (o *Org) ContactLimit() int {
 	return NoLimit
 }
 
+// MaxTicketIdleDays returns the number of days an open ticket can go without activity before it's closed
+// automatically, zero meaning never
+func (o *Org) MaxTicketIdleDays() int { return o.o.MaxTicketIdleDays }
+
 // FlowSMTP provides custom SMTP settings for flow sessions
 func (o *Org) FlowSMTP() string { return string(o.o.FlowSMTP) }
 
@@ -222,25 +230,34 @@ func (o *Org) ConfigValue(key string, def string) string {
 	return def
 }
 
-// EmailService returns the email service for this org
-func (o *Org) EmailService(ctx context.Context, rt *runtime.Runtime, retries *smtpx.RetryConfig) (flows.EmailService, error) {
+// EmailSMTP returns the SMTP configuration URL for sending email from this org, and whether that's the shared default
+func (o *Org) EmailSMTP(ctx context.Context, rt *runtime.Runtime) (string, bool, error) {
 	// first look for custom SMTP on this org
-	smtpURL := o.FlowSMTP()
+	if smtpURL := o.FlowSMTP(); smtpURL != "" {
+		return smtpURL, false, nil
+	}
 
 	// secondly look on parent org if there is one
-	if smtpURL == "" && o.o.ParentID != NilOrgID {
+	if o.o.ParentID != NilOrgID {
 		parent, err := GetOrgAssets(ctx, rt, o.o.ParentID)
 		if err != nil {
-			return nil, fmt.Errorf("error loading parent org: %w", err)
+			return "", false, fmt.Errorf("error loading parent org: %w", err)
 		}
-		smtpURL = parent.Org().FlowSMTP()
+		if smtpURL := parent.Org().FlowSMTP(); smtpURL != "" {
+			return smtpURL, false, nil
+		}
 	}
 
 	// finally use config default
-	if smtpURL == "" {
-		smtpURL = rt.Config.SMTPServer
-	}
+	return rt.Config.SMTPServer, true, nil
+}
 
+// EmailService returns the email service for this org
+func (o *Org) EmailService(ctx context.Context, rt *runtime.Runtime, retries *smtpx.RetryConfig) (flows.EmailService, error) {
+	smtpURL, _, err := o.EmailSMTP(ctx, rt)
+	if err != nil {
+		return nil, err
+	}
 	if smtpURL == "" {
 		return nil, errors.New("missing SMTP configuration")
 	}
@@ -325,6 +342,7 @@ SELECT ROW_TO_JSON(o) FROM (SELECT
 	prometheus_token,
 	o.config AS config,
 	o.limits AS limits,
+	max_ticket_idle_days,
 	(SELECT CASE date_format WHEN 'D' THEN 'DD-MM-YYYY' WHEN 'M' THEN 'MM-DD-YYYY' ELSE 'YYYY-MM-DD' END) AS date_format, 
 	'tt:mm' AS time_format,
 	timezone,

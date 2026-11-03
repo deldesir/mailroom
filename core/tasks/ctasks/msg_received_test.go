@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
+	"github.com/nyaruka/gocommon/jsonx"
 	"github.com/nyaruka/mailroom/v26/core/ivr"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/search"
@@ -85,19 +87,19 @@ func TestMsgReceivedTask(t *testing.T) {
 		{ // 0: no trigger match, inbox message
 			org:     testdb.Org1,
 			channel: testdb.TwilioChannel,
-			contact: testdb.Ann,
+			contact: testdb.Bob,
 			text:    "noop",
 		},
 		{ // 1: no trigger match, inbox message (trigger is keyword only)
 			org:     testdb.Org1,
 			channel: testdb.TwilioChannel,
-			contact: testdb.Ann,
+			contact: testdb.Bob,
 			text:    "start other",
 		},
 		{ // 2: keyword trigger match, flow message
 			org:                 testdb.Org1,
 			channel:             testdb.TwilioChannel,
-			contact:             testdb.Ann,
+			contact:             testdb.Bob,
 			text:                "start",
 			expectedReplyText:   "What is your favorite color?",
 			expectedReplyStatus: models.MsgStatusQueued,
@@ -106,7 +108,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		{ // 3:
 			org:                 testdb.Org1,
 			channel:             testdb.TwilioChannel,
-			contact:             testdb.Ann,
+			contact:             testdb.Bob,
 			text:                "purple",
 			expectedReplyText:   "I don't know that color. Try again.",
 			expectedReplyStatus: models.MsgStatusQueued,
@@ -115,7 +117,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		{ // 4:
 			org:                 testdb.Org1,
 			channel:             testdb.TwilioChannel,
-			contact:             testdb.Ann,
+			contact:             testdb.Bob,
 			text:                "blue",
 			expectedReplyText:   "Good choice, I like Blue too! What is your favorite beer?",
 			expectedReplyStatus: models.MsgStatusQueued,
@@ -124,7 +126,7 @@ func TestMsgReceivedTask(t *testing.T) {
 		{ // 5:
 			org:                 testdb.Org1,
 			channel:             testdb.TwilioChannel,
-			contact:             testdb.Ann,
+			contact:             testdb.Bob,
 			text:                "MUTZIG",
 			expectedReplyText:   "Mmmmm... delicious Mutzig. If only they made blue Mutzig! Lastly, what is your name?",
 			expectedReplyStatus: models.MsgStatusQueued,
@@ -133,16 +135,16 @@ func TestMsgReceivedTask(t *testing.T) {
 		{ // 6:
 			org:                 testdb.Org1,
 			channel:             testdb.TwilioChannel,
-			contact:             testdb.Ann,
-			text:                "Ann",
-			expectedReplyText:   "Thanks Ann, we are all done!",
+			contact:             testdb.Bob,
+			text:                "Bob",
+			expectedReplyText:   "Thanks Bob, we are all done!",
 			expectedReplyStatus: models.MsgStatusQueued,
 			expectedFlow:        testdb.Favorites,
 		},
 		{ // 7:
 			org:     testdb.Org1,
 			channel: testdb.TwilioChannel,
-			contact: testdb.Ann,
+			contact: testdb.Bob,
 			text:    "noop",
 		},
 		{ // 8:
@@ -279,6 +281,36 @@ func TestMsgReceivedTask(t *testing.T) {
 			text:             "start",
 			expectedArchived: true,
 		},
+		{ // 23: keyword trigger match but contact has open ticket so ignored
+			org:     testdb.Org1,
+			channel: testdb.TwilioChannel,
+			contact: testdb.Ann,
+			text:    "start",
+		},
+		{ // 24: contact waiting in a flow which doesn't ignore triggers but has open ticket so flow is resumed
+			preHook: func() {
+				openTickets[testdb.Cat] = append(openTickets[testdb.Cat], testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-7b2d-8c6f-4e7a1f2d3c5b", testdb.Org1, testdb.Cat, testdb.DefaultTopic, time.Now(), nil))
+			},
+			org:                 testdb.Org1,
+			channel:             testdb.TwilioChannel,
+			contact:             testdb.Cat,
+			text:                "start",
+			expectedReplyText:   "I don't know that color. Try again.",
+			expectedReplyStatus: models.MsgStatusQueued,
+			expectedFlow:        testdb.Favorites,
+		},
+		{ // 25: keyword trigger match and contact has open ticket but org has ticket triggers feature
+			preHook: func() {
+				rt.DB.MustExec(`UPDATE orgs_org SET features = '{"ticket_triggers"}' WHERE id = $1`, testdb.Org1.ID)
+			},
+			org:                 testdb.Org1,
+			channel:             testdb.TwilioChannel,
+			contact:             testdb.Ann,
+			text:                "start",
+			expectedReplyText:   "What is your favorite color?",
+			expectedReplyStatus: models.MsgStatusQueued,
+			expectedFlow:        testdb.Favorites,
+		},
 	}
 
 	makeMsgTask := func(channel *testdb.Channel, contact *testdb.Contact, text string) ctasks.Task {
@@ -315,6 +347,9 @@ func TestMsgReceivedTask(t *testing.T) {
 
 		err = tasks.Perform(ctx, rt, task)
 		assert.NoError(t, err, "%d: error when handling event", i)
+
+		// mark task done so the org doesn't hit the queue's owner limit
+		require.NoError(t, rt.Queues.Realtime.Done(ctx, vc, task))
 
 		var expectedFlowID any
 		if tc.expectedFlow != nil {
@@ -358,6 +393,14 @@ func TestMsgReceivedTask(t *testing.T) {
 				Returns(numOpenTickets, "%d: not updated open ticket mismatch", i)
 		}
 
+		// and that it has a close fire unless contact is blocked
+		numCloseFires := numOpenTickets
+		if tc.contact == blocked {
+			numCloseFires = 0
+		}
+		assertdb.Query(t, rt.DB, `SELECT count(*) FROM contacts_contactfire WHERE contact_id = $1 AND fire_type = 'K'`, tc.contact.ID).
+			Returns(numCloseFires, "%d: close fires mismatch", i)
+
 		// check any closed tickets are unchanged
 		numClosedTickets := len(closedTickets[tc.contact])
 		assertdb.Query(t, rt.DB, `SELECT count(*) FROM tickets_ticket WHERE contact_id = $1 AND status = 'C' AND last_activity_on = '2021-01-01T00:00:00Z'`, tc.contact.ID).
@@ -366,9 +409,11 @@ func TestMsgReceivedTask(t *testing.T) {
 		last = time.Now()
 	}
 
+	rt.DB.MustExec(`UPDATE orgs_org SET features = '{}' WHERE id = $1`, testdb.Org1.ID)
+
 	// check messages queued to courier
 	testsuite.AssertCourierQueues(t, rt, map[string][]int{
-		fmt.Sprintf("msgs:%s|10/1", testdb.TwilioChannel.UUID): {1, 1, 1, 1, 1, 1},
+		fmt.Sprintf("msgs:%s|10/1", testdb.TwilioChannel.UUID): {1, 1, 1, 1, 1, 1, 1, 1},
 		fmt.Sprintf("msgs:%s|10/1", testdb.Org2Channel.UUID):   {1, 1, 1, 1, 1, 1, 1, 1, 1},
 	})
 
@@ -417,6 +462,28 @@ func TestMsgReceivedTask(t *testing.T) {
 	assert.NoError(t, err)
 
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE contact_id = $1 AND direction = 'O' AND created_on > $2`, testdb.Org2Contact.ID, previous).Returns(0)
+
+	// catch all trigger should be ignored if contact has an open ticket
+	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-7a1c-9b5e-3d6f0e1c2b4a", testdb.Org2, testdb.Org2Contact, testdb.Org2DefaultTopic, time.Now(), nil)
+	models.FlushCache()
+
+	tasks.QueueContact(ctx, rt, testdb.Org2.ID, testdb.Org2Contact.ID, makeMsgTask(testdb.Org2Channel, testdb.Org2Contact, "blargh"))
+	task, _ = rt.Queues.Realtime.Pop(ctx, vc)
+	err = tasks.Perform(ctx, rt, task)
+	assert.NoError(t, err)
+
+	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE contact_id = $1 AND direction = 'O' AND created_on > $2`, testdb.Org2Contact.ID, previous).Returns(0)
+
+	// unless the org has the ticket triggers feature
+	rt.DB.MustExec(`UPDATE orgs_org SET features = '{"ticket_triggers"}' WHERE id = $1`, testdb.Org2.ID)
+	models.FlushCache()
+
+	tasks.QueueContact(ctx, rt, testdb.Org2.ID, testdb.Org2Contact.ID, makeMsgTask(testdb.Org2Channel, testdb.Org2Contact, "blargh"))
+	task, _ = rt.Queues.Realtime.Pop(ctx, vc)
+	err = tasks.Perform(ctx, rt, task)
+	assert.NoError(t, err)
+
+	assertdb.Query(t, rt.DB, `SELECT text FROM msgs_msg WHERE contact_id = $1 AND direction = 'O' AND created_on > $2`, testdb.Org2Contact.ID, previous).Returns("Hey, how are you?")
 }
 
 func TestMsgReceivedNewURN(t *testing.T) {
@@ -636,6 +703,59 @@ func TestMsgReceivedPayload(t *testing.T) {
 
 	msg := msgEvent["msg"].(map[string]any)
 	assert.Equal(t, map[string]any{"flow_token": "abc123", "answers": map[string]any{"rating": "5"}}, msg["payload"])
+}
+
+func TestMsgReceivedReplyLastSeenOn(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	testdb.InsertKeywordTrigger(t, rt, testdb.Org1, testdb.Favorites, []string{"start"}, models.MatchOnly, nil, nil, nil)
+
+	// Ann hasn't been seen for a few days
+	rt.DB.MustExec(`UPDATE contacts_contact SET last_seen_on = NOW() - INTERVAL '3 days' WHERE id = $1`, testdb.Ann.ID)
+	oldLastSeenOn := getLastSeenOn(t, rt, testdb.Ann)
+
+	oa := testdb.Org1.Load(t, rt)
+	ann, _, _ := testdb.Ann.Load(t, rt, oa)
+
+	dbMsg := testdb.InsertIncomingMsg(t, rt, testdb.Org1, "0199bad8-f98d-75a3-b641-2718a25ac3f5", testdb.TwilioChannel, testdb.Ann, "", models.MsgStatusPending, "")
+
+	task := &ctasks.MsgReceived{
+		ChannelID:     testdb.TwilioChannel.ID,
+		MsgUUID:       dbMsg.UUID,
+		MsgExternalID: "SM123",
+		URN:           testdb.Ann.URN,
+		URNID:         testdb.Ann.URNID,
+		Text:          "start",
+	}
+
+	err := task.Perform(ctx, rt, oa, ann)
+	require.NoError(t, err)
+
+	newLastSeenOn := getLastSeenOn(t, rt, testdb.Ann)
+	require.True(t, newLastSeenOn.After(*oldLastSeenOn))
+
+	queueKey := fmt.Sprintf("msgs:%s|10/1", testdb.TwilioChannel.UUID)
+	testsuite.AssertCourierQueues(t, rt, map[string][]int{queueKey: {1}})
+
+	batches, err := valkey.ByteSlices(vc.Do("ZRANGE", queueKey, 0, -1))
+	require.NoError(t, err)
+
+	var msgs []struct {
+		Contact struct {
+			LastSeenOn *time.Time `json:"last_seen_on"`
+		} `json:"contact"`
+		ResponseToExternalID string `json:"response_to_external_id"`
+	}
+	jsonx.MustUnmarshal(batches[0], &msgs)
+	require.Len(t, msgs, 1)
+
+	// the reply is queued after last_seen_on has been updated, so channels can use it to tell that the contact is
+	// within a messaging window, e.g. WhatsApp's customer service window
+	require.NotNil(t, msgs[0].Contact.LastSeenOn)
+	assert.WithinDuration(t, *newLastSeenOn, *msgs[0].Contact.LastSeenOn, time.Millisecond) // db stores microseconds
+	assert.Equal(t, "SM123", msgs[0].ResponseToExternalID)
 }
 
 func getLastSeenOn(t *testing.T, rt *runtime.Runtime, c *testdb.Contact) *time.Time {
