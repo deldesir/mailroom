@@ -33,6 +33,7 @@ func TestLoadOrg(t *testing.T) {
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_smtp = 'smtp://foo:bar' WHERE id = $1`, testdb.Org1.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET features = '{"unrestricted_webhooks"}' WHERE id = $1`, testdb.Org1.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET limits = '{"contacts": 1000}' WHERE id = $1`, testdb.Org1.ID)
+	rt.DB.MustExec(`UPDATE orgs_org SET max_ticket_idle_days = 14 WHERE id = $1`, testdb.Org1.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET is_suspended = TRUE, suspended_on = NOW(), limits = '{"groups": 250}' WHERE id = $1`, testdb.Org2.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_languages = '{}' WHERE id = $1`, testdb.Org2.ID)
 	rt.DB.MustExec(`UPDATE orgs_org SET date_format = 'M' WHERE id = $1`, testdb.Org2.ID)
@@ -46,6 +47,7 @@ func TestLoadOrg(t *testing.T) {
 	assert.False(t, org.HasFeature("teams"))
 	assert.Equal(t, "smtp://foo:bar", org.FlowSMTP())
 	assert.Equal(t, 1000, org.ContactLimit())
+	assert.Equal(t, 14, org.MaxTicketIdleDays())
 	assert.Equal(t, envs.DateFormatDayMonthYear, org.Environment().DateFormat())
 	assert.Equal(t, envs.TimeFormatHourMinute, org.Environment().TimeFormat())
 	assert.Equal(t, envs.RedactionPolicyNone, org.Environment().RedactionPolicy())
@@ -62,6 +64,7 @@ func TestLoadOrg(t *testing.T) {
 	assert.False(t, org.HasFeature(models.FeatureUnrestrictedWebhooks))
 	assert.Equal(t, "", org.FlowSMTP())
 	assert.Equal(t, models.NoLimit, org.ContactLimit()) // limits set but no contacts key
+	assert.Equal(t, 30, org.MaxTicketIdleDays())
 	assert.Equal(t, envs.DateFormatMonthDayYear, org.Environment().DateFormat())
 	assert.Equal(t, []i18n.Language{}, org.Environment().AllowedLanguages())
 	assert.Equal(t, i18n.NilLanguage, org.Environment().DefaultLanguage())
@@ -110,6 +113,11 @@ func TestEmailService(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, svc)
 
+	smtpURL, shared, err := org1.EmailSMTP(ctx, rt)
+	assert.NoError(t, err)
+	assert.Equal(t, `smtp://foo:bar@example.com?from=foo%40example.com`, smtpURL)
+	assert.True(t, shared)
+
 	// set explicitly for org 1
 	rt.Config.SMTPServer = ""
 	rt.DB.MustExec(`UPDATE orgs_org SET flow_smtp = 'smtp://zed:123@flows.com?from=foo%40flows.com' WHERE id = $1`, testdb.Org1.ID)
@@ -126,6 +134,11 @@ func TestEmailService(t *testing.T) {
 	svc, err = org2.EmailService(ctx, rt, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, svc)
+
+	smtpURL, shared, err = org2.EmailSMTP(ctx, rt)
+	assert.NoError(t, err)
+	assert.Equal(t, `smtp://zed:123@flows.com?from=foo%40flows.com`, smtpURL)
+	assert.False(t, shared)
 }
 
 func TestWebhookServiceFactory(t *testing.T) {

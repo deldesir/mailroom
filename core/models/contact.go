@@ -329,7 +329,7 @@ func LoadContacts(ctx context.Context, db Queryer, oa *OrgAssets, ids []ContactI
 				UUID:           t.UUID,
 				OrgID:          oa.OrgID(),
 				ContactID:      contact.ID(),
-				Status:         TicketStatusOpen,
+				Status:         t.Status,
 				TopicID:        t.TopicID,
 				AssigneeID:     t.AssigneeID,
 				LastActivityOn: t.LastActivityOn,
@@ -442,6 +442,24 @@ func GetContactIDsPage(ctx context.Context, db Queryer, orgID OrgID, afterID Con
 	return queryContactIDs(ctx, db, sqlSelectContactIDsPage, orgID, int(afterID), limit)
 }
 
+// the CTE is materialized so that tickets are found via the org index - otherwise ordering by contact_id with a limit
+// can tempt the planner into walking the index on contact_id across every org's active tickets
+const sqlSelectContactIDsWithActiveTicketPage = `
+WITH active AS MATERIALIZED (
+    SELECT contact_id FROM tickets_ticket WHERE org_id = $1 AND status IN ('P', 'O')
+)
+SELECT a.contact_id
+  FROM active a
+  JOIN contacts_contact c ON c.id = a.contact_id
+ WHERE a.contact_id > $2 AND c.is_active = TRUE
+ ORDER BY a.contact_id
+ LIMIT $3`
+
+// GetContactIDsWithActiveTicketPage is like GetContactIDsPage but only returns contacts with a pending or open ticket.
+func GetContactIDsWithActiveTicketPage(ctx context.Context, db Queryer, orgID OrgID, afterID ContactID, limit int) ([]ContactID, error) {
+	return queryContactIDs(ctx, db, sqlSelectContactIDsWithActiveTicketPage, orgID, int(afterID), limit)
+}
+
 type ContactURN struct {
 	ID         URNID            `json:"id"          db:"id"`
 	OrgID      OrgID            `                   db:"org_id"`
@@ -498,6 +516,7 @@ type contactEnvelope struct {
 	Tickets  []struct {
 		ID             TicketID        `json:"id"`
 		UUID           core.TicketUUID `json:"uuid"`
+		Status         TicketStatus    `json:"status"`
 		TopicID        TopicID         `json:"topic_id"`
 		AssigneeID     UserID          `json:"assignee_id"`
 		LastActivityOn time.Time       `json:"last_activity_on"`
@@ -549,13 +568,13 @@ LEFT JOIN (
 		contact_id,
 		array_agg(
 			json_build_object(
-				'id', t.id, 'uuid', t.uuid, 'topic_id', t.topic_id, 'assignee_id', t.assignee_id, 'last_activity_on', t.last_activity_on
+				'id', t.id, 'uuid', t.uuid, 'status', t.status, 'topic_id', t.topic_id, 'assignee_id', t.assignee_id, 'last_activity_on', t.last_activity_on
 			) ORDER BY t.opened_on
 		) as tickets
 	FROM
 		tickets_ticket t
 	WHERE
-		t.status = 'O' AND t.contact_id = ANY($1)
+		t.status IN ('P', 'O') AND t.contact_id = ANY($1)
 	GROUP BY
 		contact_id
 ) t ON c.id = t.contact_id
@@ -902,8 +921,8 @@ func insertContactAndURNs(ctx context.Context, db DBorTx, orgID OrgID, userID Us
 	// first insert our contact
 	var contactID ContactID
 	err := db.GetContext(ctx, &contactID,
-		`INSERT INTO contacts_contact (org_id, is_active, uuid, name, language, status, ticket_count, created_on, modified_on, created_by_id, modified_by_id) 
-		VALUES($1, TRUE, $2, $3, $4, $5, 0, $6, $6, $7, $7)
+		`INSERT INTO contacts_contact (org_id, is_active, uuid, name, language, status, created_on, modified_on, created_by_id, modified_by_id) 
+		VALUES($1, TRUE, $2, $3, $4, $5, $6, $6, $7, $7)
 		RETURNING id`,
 		orgID, core.NewContactUUID(), null.String(name), null.String(string(language)), status, dates.Now(), userID,
 	)

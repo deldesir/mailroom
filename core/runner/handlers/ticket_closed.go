@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/nyaruka/gocommon/dates"
+	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/goflow/core/events"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/core/runner"
@@ -25,14 +27,42 @@ func handleTicketClosed(ctx context.Context, rt *runtime.Runtime, oa *models.Org
 	dbTicket := scene.DBContact.FindTicket(event.TicketUUID)
 	dbTicket.Status = models.TicketStatusClosed
 	dbTicket.ClosedOn = &event.CreatedOn_
-	dbTicket.LastActivityOn = dates.Now()
+	dbTicket.Outcome = models.TicketOutcomeFromEngine(event.Outcome)
+
+	automatic := event.Outcome == core.TicketOutcomeIdle
+
+	// automatic closes of inactive tickets aren't activity, and bumping them would put them ahead of tickets recently
+	// closed by users
+	if !automatic {
+		dbTicket.LastActivityOn = dates.Now()
+	}
 
 	scene.AttachPreCommitHook(hooks.UpdateTickets, dbTicket)
+	scene.AttachPreCommitHook(hooks.UpdateTicketFires, dbTicket)
+	scene.AttachPostCommitHook(hooks.IndexContacts, event)
 
-	// only closes by a user fire closed ticket triggers, not automatic closes of inactive tickets
-	if userID != models.NilUserID {
-		scene.AttachPostCommitHook(hooks.QueueContactTask, ctasks.NewTicketClosed(event))
+	// automatic closes can come in large batches so avoid queuing tasks for contacts that won't match a trigger
+	trigger := models.FindMatchingTicketClosedTrigger(oa, scene.Contact)
+	if trigger == nil {
+		return nil
 	}
+
+	// closed ticket triggers should only use background flows, but don't rely on that for closes not made by a user, which
+	// could otherwise interrupt or call large numbers of contacts
+	if userID == models.NilUserID {
+		flow, err := oa.FlowByID(trigger.FlowID())
+		if err == models.ErrNotFound {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("error loading flow for trigger: %w", err)
+		}
+		if flow.FlowType() != models.FlowTypeBackground {
+			return nil
+		}
+	}
+
+	scene.AttachPostCommitHook(hooks.QueueContactTask, ctasks.NewTicketClosed(event))
 
 	return nil
 }

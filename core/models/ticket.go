@@ -27,14 +27,36 @@ func (i TicketID) MarshalJSON() ([]byte, error)  { return null.MarshalInt(i) }
 type TicketStatus string
 
 const (
-	TicketStatusOpen   = TicketStatus("O")
-	TicketStatusClosed = TicketStatus("C")
+	TicketStatusPending = TicketStatus("P")
+	TicketStatusOpen    = TicketStatus("O")
+	TicketStatusClosed  = TicketStatus("C")
 )
 
 var ticketStatusMap = map[TicketStatus]core.TicketStatus{
-	TicketStatusOpen:   core.TicketStatusOpen,
-	TicketStatusClosed: core.TicketStatusClosed,
+	TicketStatusPending: core.TicketStatusPending,
+	TicketStatusOpen:    core.TicketStatusOpen,
+	TicketStatusClosed:  core.TicketStatusClosed,
 }
+
+// TicketOutcome is how a closed ticket ended
+type TicketOutcome string
+
+const (
+	NilTicketOutcome      = TicketOutcome("")
+	TicketOutcomeResolved = TicketOutcome("R")
+	TicketOutcomeIdle     = TicketOutcome("I")
+)
+
+var ticketOutcomeMap = map[core.TicketOutcome]TicketOutcome{
+	core.TicketOutcomeResolved: TicketOutcomeResolved,
+	core.TicketOutcomeIdle:     TicketOutcomeIdle,
+}
+
+// TicketOutcomeFromEngine converts an engine ticket outcome to its database value
+func TicketOutcomeFromEngine(o core.TicketOutcome) TicketOutcome { return ticketOutcomeMap[o] }
+
+func (o TicketOutcome) Value() (driver.Value, error) { return null.StringValue(o) }
+func (o *TicketOutcome) Scan(value any) error        { return null.ScanString(value, o) }
 
 type Ticket struct {
 	ID             TicketID        `db:"id"`
@@ -50,6 +72,7 @@ type Ticket struct {
 	RepliedOn      *time.Time      `db:"replied_on"`
 	ModifiedOn     time.Time       `db:"modified_on"`
 	ClosedOn       *time.Time      `db:"closed_on"`
+	Outcome        TicketOutcome   `db:"outcome"`
 	LastActivityOn time.Time       `db:"last_activity_on"`
 }
 
@@ -107,6 +130,7 @@ SELECT
   replied_on,
   modified_on,
   closed_on,
+  outcome,
   last_activity_on
     FROM tickets_ticket
    WHERE org_id = $1 AND uuid = ANY($2)
@@ -176,31 +200,6 @@ func InsertTickets(ctx context.Context, tx DBorTx, oa *OrgAssets, tickets []*Tic
 	return nil
 }
 
-// InactiveTicket is an open ticket that has had no activity since a given time
-type InactiveTicket struct {
-	ID        TicketID  `db:"id"`
-	OrgID     OrgID     `db:"org_id"`
-	ContactID ContactID `db:"contact_id"`
-}
-
-const sqlSelectInactiveTickets = `
-    SELECT t.id, t.org_id, t.contact_id
-      FROM tickets_ticket t
-INNER JOIN orgs_org o ON o.id = t.org_id
-     WHERE t.status = 'O' AND t.last_activity_on < $1 AND o.is_active
-  ORDER BY t.last_activity_on
-     LIMIT $2`
-
-// GetInactiveTickets gets up to limit open tickets across all orgs that have had no activity since the given time,
-// oldest activity first.
-func GetInactiveTickets(ctx context.Context, db DBorTx, olderThan time.Time, limit int) ([]*InactiveTicket, error) {
-	tickets := make([]*InactiveTicket, 0, limit)
-	if err := db.SelectContext(ctx, &tickets, sqlSelectInactiveTickets, olderThan, limit); err != nil {
-		return nil, fmt.Errorf("error selecting inactive tickets: %w", err)
-	}
-	return tickets, nil
-}
-
 // UpdateTicketLastActivity updates the last_activity_on of the given tickets to be now
 func UpdateTicketLastActivity(ctx context.Context, db DBorTx, tickets []*Ticket) error {
 	now := dates.Now()
@@ -220,9 +219,10 @@ UPDATE tickets_ticket t
        assignee_id = r.assignee_id,
        topic_id = r.topic_id,
        last_activity_on = GREATEST(t.last_activity_on, r.last_activity_on),
-	   closed_on = r.closed_on,
+       closed_on = r.closed_on,
+       outcome = r.outcome,
        modified_on = NOW()
-  FROM (VALUES(:id::int, :status, :assignee_id::int, :topic_id::int, :last_activity_on::timestamptz, :closed_on::timestamptz)) AS r(id, status, assignee_id, topic_id, last_activity_on, closed_on)
+  FROM (VALUES(:id::int, :status, :assignee_id::int, :topic_id::int, :last_activity_on::timestamptz, :closed_on::timestamptz, :outcome)) AS r(id, status, assignee_id, topic_id, last_activity_on, closed_on, outcome)
  WHERE t.id = r.id`
 
 // UpdateTickets updates the passed in tickets in the database

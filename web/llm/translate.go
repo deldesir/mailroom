@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/goflow/assets"
-	"github.com/nyaruka/goflow/core"
 	"github.com/nyaruka/mailroom/v26/core/ai"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
@@ -29,14 +27,9 @@ func init() {
 // typically allow a request, since a longer wait here would just move where the request is cut off.
 const writeTimeout = 55 * time.Second
 
-// CallTimeout is how long we give the LLM to respond. Together with RecordTimeout it needs to stay under
-// writeTimeout, so that the LLM being too slow is reported as a proper error response rather than a dropped
-// connection.
+// CallTimeout is how long we give the LLM to respond. It needs to stay under writeTimeout, so that the LLM being
+// too slow is reported as a proper error response rather than a dropped connection.
 var CallTimeout = 50 * time.Second
-
-// RecordTimeout is how long we allow for recording the call afterwards. It only has to cover a single small
-// insert so is kept short to leave as much of the write timeout as possible for the LLM.
-var RecordTimeout = 3 * time.Second
 
 // Performs batch translation using an LLM. Items is a map keyed by a
 // caller-supplied opaque id; each entry holds the array of strings to
@@ -111,17 +104,7 @@ func handleTranslate(ctx context.Context, rt *runtime.Runtime, r *translateReque
 
 	callStart := time.Now()
 	trans, err := llmSvc.Translate(callCtx, r.Source, r.Target, toTranslate)
-	if trans == nil {
-		trans = &core.Translation{}
-	}
-	counts := llm.RecordCall(rt, oa, time.Since(callStart), trans.Tokens)
-
-	// detach from the request context so a client-side timeout during the LLM call doesn't prevent us from recording usage someone may have paid for
-	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), RecordTimeout)
-	defer cancel()
-	if rerr := insertLLMCallCounts(recCtx, rt, counts); rerr != nil {
-		slog.Error("error recording llm call", "error", rerr, "llm_id", r.LLMID)
-	}
+	llm.RecordCall(rt, time.Since(callStart))
 
 	// An error from the LLM service itself (bad credentials, rate limit, model unavailable, etc.)
 	// is reported as 422 because LLMs are user-configured — it's not necessarily our fault.
@@ -156,17 +139,4 @@ func handleTranslate(ctx context.Context, rt *runtime.Runtime, r *translateReque
 	maps.Copy(unchanged, trans.Items)
 
 	return translateResponse{Items: unchanged}, http.StatusOK, nil
-}
-
-// insertLLMCallCounts inserts the given LLM daily counts in a transaction.
-func insertLLMCallCounts(ctx context.Context, rt *runtime.Runtime, counts []*models.LLMDailyCount) error {
-	tx, err := rt.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("error starting transaction: %w", err)
-	}
-	if err := models.InsertLLMDailyCounts(ctx, tx, counts); err != nil {
-		tx.Rollback()
-		return err
-	}
-	return tx.Commit()
 }

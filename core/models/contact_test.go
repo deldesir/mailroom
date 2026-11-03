@@ -24,12 +24,11 @@ import (
 func TestContacts(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
-	// for now it's still possible to have more than one open ticket in the database
-	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-717a-a39e-e8ca91fb7262", testdb.Org1, testdb.Ann, testdb.SupportTopic, time.Now(), testdb.Agent)
+	testdb.InsertClosedTicket(t, rt, "01992f54-5ab6-717a-a39e-e8ca91fb7262", testdb.Org1, testdb.Ann, testdb.SupportTopic, testdb.Agent)
 	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-725e-be9c-0c6407efd755", testdb.Org1, testdb.Ann, testdb.SalesTopic, time.Now(), nil)
 
 	testdb.InsertContactURN(t, rt, testdb.Org1, testdb.Bob, "whatsapp:250788373373", 999, nil)
-	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-7498-a7f2-6aa246e45cfe", testdb.Org1, testdb.Bob, testdb.DefaultTopic, time.Now(), testdb.Editor)
+	testdb.InsertPendingTicket(t, rt, "01992f54-5ab6-7498-a7f2-6aa246e45cfe", testdb.Org1, testdb.Bob, testdb.DefaultTopic, time.Now(), testdb.Editor)
 
 	org, err := models.GetOrgAssetsWithRefresh(ctx, rt, testdb.Org1.ID, models.RefreshAll)
 	assert.NoError(t, err)
@@ -60,9 +59,9 @@ func TestContacts(t *testing.T) {
 	assert.Len(t, ann.URNs(), 1)
 	assert.Equal(t, urns.URN("tel:+16055741111"), ann.URNs()[0].Encode())
 	assert.Equal(t, 1, ann.Groups().Count())
-	assert.Equal(t, 2, ann.Tickets().Open().Count())
+	assert.Len(t, ann.Tickets().All(), 1) // closed tickets aren't loaded
 
-	annTicket := ann.Tickets().LastOpen()
+	annTicket := ann.Tickets().Active()
 	assert.Equal(t, "Sales", annTicket.Topic().Name())
 	assert.Nil(t, annTicket.Assignee())
 
@@ -78,13 +77,22 @@ func TestContacts(t *testing.T) {
 	assert.Equal(t, urns.URN("tel:+16055742222"), bob.URNs()[0].Encode())
 	assert.Equal(t, urns.URN("whatsapp:250788373373"), bob.URNs()[1].Encode())
 	assert.Equal(t, 0, bob.Groups().Count())
-	assert.NotNil(t, bob.Tickets().LastOpen())
+	assert.NotNil(t, bob.Tickets().Active())
+	assert.Equal(t, core.TicketStatusPending, bob.Tickets().Active().Status())
+
+	// saving changes to the DB ticket doesn't change its status
+	bobTicket := mcs[1].Tickets()[0]
+	assert.Equal(t, models.TicketStatusPending, bobTicket.Status)
+
+	bobTicket.TopicID = testdb.SalesTopic.ID
+	require.NoError(t, models.UpdateTickets(ctx, rt.DB, []*models.Ticket{bobTicket}))
+	assertdb.Query(t, rt.DB, `SELECT status, topic_id FROM tickets_ticket WHERE id = $1`, bobTicket.ID).Columns(map[string]any{"status": "P", "topic_id": testdb.SalesTopic.ID})
 
 	assert.Equal(t, "Cat", cat.Name())
 	assert.Equal(t, types.NewXNumberFromInt(30), cat.Fields()["age"].QueryValue())
 	assert.Equal(t, 0, len(cat.URNs()))
 	assert.Equal(t, 0, cat.Groups().Count())
-	assert.Nil(t, cat.Tickets().LastOpen())
+	assert.Nil(t, cat.Tickets().Active())
 }
 
 func TestCreateContact(t *testing.T) {
@@ -472,6 +480,34 @@ func TestGetContactIDsPage(t *testing.T) {
 	for _, id := range ids2 {
 		assert.NotContains(t, ids, id)
 	}
+}
+
+func TestGetContactIDsWithActiveTicketPage(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	testdb.InsertClosedTicket(t, rt, "01992f54-5ab6-717a-a39e-e8ca91fb7262", testdb.Org1, testdb.Ann, testdb.DefaultTopic, nil)
+	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-725e-be9c-0c6407efd755", testdb.Org1, testdb.Bob, testdb.DefaultTopic, time.Now(), nil)
+	testdb.InsertPendingTicket(t, rt, "01992f54-5ab6-7498-a7f2-6aa246e45cfe", testdb.Org1, testdb.Cat, testdb.DefaultTopic, time.Now(), nil)
+	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-7a1c-8f9e-1b2c3d4e5f60", testdb.Org1, testdb.Dan, testdb.DefaultTopic, time.Now(), nil)
+	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-7b2d-9a0f-2c3d4e5f6071", testdb.Org2, testdb.Org2Contact, testdb.Org2DefaultTopic, time.Now(), nil)
+
+	rt.DB.MustExec(`UPDATE contacts_contact SET is_active = FALSE WHERE id = $1`, testdb.Dan.ID)
+
+	ids, err := models.GetContactIDsWithActiveTicketPage(ctx, rt.DB, testdb.Org1.ID, models.NilContactID, 1)
+	require.NoError(t, err)
+	assert.Equal(t, []models.ContactID{testdb.Bob.ID}, ids)
+
+	ids, err = models.GetContactIDsWithActiveTicketPage(ctx, rt.DB, testdb.Org1.ID, testdb.Bob.ID, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []models.ContactID{testdb.Cat.ID}, ids)
+
+	ids, err = models.GetContactIDsWithActiveTicketPage(ctx, rt.DB, testdb.Org1.ID, testdb.Cat.ID, 10)
+	require.NoError(t, err)
+	assert.Len(t, ids, 0)
+
+	ids, err = models.GetContactIDsWithActiveTicketPage(ctx, rt.DB, testdb.Org2.ID, models.NilContactID, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []models.ContactID{testdb.Org2Contact.ID}, ids)
 }
 
 func TestUpdateContactLastSeenAndModifiedOn(t *testing.T) {
