@@ -1,3 +1,94 @@
+## v26.3.144 (2026-11-13)
+ * Tally calls by org, channel and direction
+
+## v26.3.143 (2026-11-12)
+ * Load channel TPS as stored instead of defaulting NULL to 10
+ * Set tps when inserting test channels and regenerate test dump for non-null channel tps
+
+## v26.3.142 (2026-11-12)
+ * Expire new contact and flow daily tallies after 400 days
+ * Split user-created contacts into ui and api in the daily new contact tally
+
+## v26.3.141 (2026-11-12)
+ * Add daily per-workspace tally of new contacts by how they were created, counting them even if the creating context is cancelled
+
+## v26.3.140 (2026-11-12)
+ * Add contact_created contact task to evaluate query groups for externally created contacts
+ * Accept contact_created as an alias of new_contact in msg_received and event_received tasks
+
+## v26.3.139 (2026-11-11)
+ * Write per-channel message tallies as channel tallies
+
+## v26.3.138 (2026-11-11)
+ * Flush channel tallies to channels_channeltally
+ * Update to gocommon v1.100.2
+ * Regenerate test database dump
+
+## v26.3.137 (2026-11-11)
+ * Write flow segment tally scopes as base64url of the raw exit and node UUIDs
+ * Stop writing segment counts to flow activity counts
+
+## v26.3.136 (2026-11-10)
+ * Tally messages which failed for having no destination
+ * Stop inheriting the shared_email feature from the parent org
+ * Update dependencies
+
+## v26.3.135 (2026-11-10)
+ * Only use the shared email configuration for workspaces with the shared_email feature
+
+## v26.3.134 (2026-11-10)
+ * Stop setting tps_cost on messages queued for courier
+
+## v26.3.133 (2026-11-10)
+ * Expire daily flow msgs in tallies after 365 days
+
+## v26.3.132 (2026-11-10)
+ * Tally incoming messages handled by flows, including IVR messages, to flows_flowtally
+
+## v26.3.131 (2026-11-09)
+ * Require owner prefixes on tally fields
+ * Write flow segment tallies to flows_flowtally
+ * Drop tallies for owner ids beyond int32 range
+ * Regenerate test database dump
+
+## v26.3.130 (2026-11-09)
+ * Write O prefix on org in tally fields
+ * Don't keep zero tallies and count expiries from the tally's day
+
+## v26.3.129 (2026-11-09)
+ * Accept O prefix on org in tally fields
+
+## v26.3.128 (2026-11-06)
+ * Stop writing tallies to orgs_tally
+ * Report channel msg counts in org metrics as always 0
+
+## v26.3.127 (2026-11-05)
+ * Write tally batches to orgs_orgtally as well as orgs_tally
+
+## v26.3.126 (2026-11-05)
+ * Use gocommon's MsgsV2 queue to push and clear courier queues
+
+## v26.3.125 (2026-11-04)
+ * Queue messages to courier in its per-channel queue layout and add tests for pushes within one server second and for pushes and clears that leave a channel ready or waiting
+
+## v26.3.124 (2026-11-04)
+ * Use vkutil tallies with org fields built by models.TallyField and keep per-channel message tallies for 400 days and channel logs for 1 week
+ * Stop the review workflow adding Claude Code attribution
+
+## v26.3.123 (2026-11-04)
+ * Flush tallies in batches across orgs and apply retention when writing them
+ * Regenerate test database dump and give closed test tickets an outcome
+
+## v26.3.122 (2026-11-03)
+ * Move tallies instance onto the runtime
+ * Give each tally writer its own retention
+ * Update to gocommon v1.98.2
+
+## v26.3.121 (2026-11-03)
+ * Tally messages with a channel by channel, type, direction and day
+ * Skip tallying when there's nothing to count
+ * Update to gocommon v1.98.1
+
 ## v26.3.120 (2026-11-02)
  * Leave tallying of LLM usage to LLM services
 

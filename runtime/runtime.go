@@ -32,8 +32,9 @@ type Runtime struct {
 	Embeddings Embedder
 	Centrifugo *centrifugo.Service
 
-	Queues *Queues
-	Stats  *StatsCollector
+	Queues  *Queues
+	Stats   *StatsCollector
+	Tallies *vkutil.Tallies // key base must match anything else which increments the same tallies
 
 	// HTTP holds the http.Clients for outbound calls — Services for fixed (non-webhook) targets (LLM
 	// providers, airtime, IVR, courier), and Engine / Simulator for user-controlled webhook calls (which
@@ -111,6 +112,7 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 
 	rt.Queues = newQueues(cfg)
 	rt.Stats = NewStatsCollector(rt.VK, cfg.LatencyExcludedOrgs)
+	rt.Tallies = vkutil.NewTallies("tallies")
 	rt.HTTP = newHTTP(cfg)
 
 	return rt, nil

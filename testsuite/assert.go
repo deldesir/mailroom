@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func AssertCourierQueues(t *testing.T, rt *runtime.Runtime, expected map[string]
 	vc := rt.VK.Get()
 	defer vc.Close()
 
-	queueKeys, err := valkey.Strings(vc.Do("KEYS", "msgs:????????-*"))
+	queueKeys, err := valkey.Strings(vc.Do("KEYS", "{msgs}:q:*"))
 	require.NoError(t, err)
 
 	actual := make(map[string][]int, len(queueKeys))
@@ -132,4 +133,25 @@ func AssertDailyCounts(t *testing.T, rt *runtime.Runtime, org *testdb.Org, expec
 	}
 
 	assert.Equal(t, expected, actual)
+}
+
+// AssertNewContactTallies asserts the unflushed tallies of new contacts by their fields without the day, e.g.
+// O1|contacts/new:inbound
+func AssertNewContactTallies(t *testing.T, rt *runtime.Runtime, expected map[string]int, msgAndArgs ...any) {
+	t.Helper()
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	live, err := valkey.IntMap(vc.Do("HGETALL", "{tallies}:live"))
+	require.NoError(t, err)
+
+	actual := make(map[string]int)
+	for field, count := range live {
+		if scope, _, _ := strings.Cut(field, "@"); strings.Contains(scope, "|"+models.TallyContactsNew+":") {
+			actual[scope] += count
+		}
+	}
+
+	assert.Equal(t, expected, actual, msgAndArgs...)
 }

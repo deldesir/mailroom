@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	valkey "github.com/gomodule/redigo/redis"
 	"github.com/nyaruka/gocommon/aws/dynamo"
+	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/dbutil/assertdb"
 	"github.com/nyaruka/gocommon/httpx"
 	"github.com/nyaruka/gocommon/jsonx"
@@ -55,6 +59,9 @@ func mockTwilioHandler(w http.ResponseWriter, r *http.Request) {
 func TestTwilioIVR(t *testing.T) {
 	ctx, rt := testsuite.Runtime(t)
 
+	vc := rt.VK.Get()
+	defer vc.Close()
+
 	// start mocked API server
 	mockTwilio := test.NewHTTPServer(50001, http.HandlerFunc(mockTwilioHandler))
 	defer mockTwilio.Close()
@@ -89,6 +96,10 @@ func TestTwilioIVR(t *testing.T) {
 		WithContactIDs([]models.ContactID{testdb.Ann.ID, testdb.Bob.ID, testdb.Cat.ID}).
 		WithParentSummary(parentSummary)
 
+	// on the day the web tests run on, so that the calls are tallied on it too
+	dates.SetNowFunc(dates.NewFixedNow(time.Date(2025, 5, 4, 12, 0, 0, 0, time.UTC)))
+	defer dates.SetNowFunc(time.Now)
+
 	err := tasks.Queue(ctx, rt, rt.Queues.Batch, testdb.Org1.ID, &tasks.StartFlow{FlowStart: start}, false)
 	require.NoError(t, err)
 
@@ -117,6 +128,26 @@ func TestTwilioIVR(t *testing.T) {
 
 	assertdb.Query(t, rt.DB, `SELECT count(*) FROM msgs_msg WHERE contact_id = $1 AND msg_type = 'V' 
 		AND ((status = 'H' AND direction = 'I') OR (status = 'W' AND direction = 'O'))`, testdb.Bob.ID).Returns(2)
+
+	// calls and voice messages in both directions are tallied, as are the flow segments taken and the incoming messages
+	// for the flow
+	tallies, err := valkey.StringMap(vc.Do("HGETALL", "{tallies}:live"))
+	require.NoError(t, err)
+	segments := maps.Clone(tallies)
+	maps.DeleteFunc(segments, func(f, _ string) bool { return !strings.HasPrefix(f, fmt.Sprintf("F%d|segment:", testdb.IVRFlow.ID)) })
+	assert.NotEmpty(t, segments)
+	assert.Equal(t, "5", tallies[fmt.Sprintf("F%d|msgsin:date:2025-05-04", testdb.IVRFlow.ID)])
+	maps.DeleteFunc(tallies, func(f, _ string) bool { return strings.HasPrefix(f, "F") })
+	assert.Equal(t, map[string]string{
+		"C10000|calls:in@2025-05-04":   "2",
+		"C10000|calls:out@2025-05-04":  "3",
+		"C10000|voice:in@2025-05-04":   "5",
+		"C10000|voice:out@2025-05-04":  "11",
+		"O1|calls/in@2025-05-04":       "2",
+		"O1|calls/out@2025-05-04":      "3",
+		"O1|msgs/voice:in@2025-05-04":  "5",
+		"O1|msgs/voice:out@2025-05-04": "11",
+	}, tallies)
 
 	// check the generated channel logs
 	logs := getCallLogs(t, rt, testdb.TwilioChannel)
@@ -206,6 +237,9 @@ func TestVonageIVR(t *testing.T) {
 	rt.DB.MustExec(`UPDATE ivr_call SET uuid = '01969b47-2c93-76f8-b774-0a98171a0712' WHERE external_id = 'Call2'`)
 
 	testsuite.RunWebTests(t, rt, "./testdata/ivr_vonage.json")
+
+	// the incoming call was from a new contact
+	testsuite.AssertNewContactTallies(t, rt, map[string]int{"O1|contacts/new:inbound": 1})
 
 	// check our final state of sessions, runs, calls, msgs
 	assertdb.Query(t, rt.DB, `SELECT format('%s/%s', contact_uuid, status), count(*) FROM flows_flowsession GROUP BY 1`).

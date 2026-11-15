@@ -106,7 +106,7 @@ func handleIncoming(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsse
 	}
 
 	// get the contact for this URN
-	mc, _, _, err := models.GetOrCreateContact(ctx, rt.DB, oa, userID, []urns.URN{urn}, ch.ID())
+	mc, _, _, err := models.GetOrCreateContact(ctx, rt.DB, oa, userID, models.ContactSourceInbound, []urns.URN{urn}, ch.ID())
 	if err != nil {
 		return nil, svc.WriteErrorResponse(w, fmt.Errorf("unable to get contact by urn: %w", err))
 	}
@@ -121,6 +121,8 @@ func handleIncoming(ctx context.Context, rt *runtime.Runtime, oa *models.OrgAsse
 	if err := models.InsertCalls(ctx, rt.DB, []*models.Call{call}); err != nil {
 		return nil, svc.WriteErrorResponse(w, fmt.Errorf("error inserting incoming call: %w", err))
 	}
+
+	models.IncrementCallTallies(ctx, rt, oa.OrgID(), []*models.Call{call})
 
 	// create an incoming call "task" and handle it to see if we have a trigger
 	task := &ctasks.EventReceived{
