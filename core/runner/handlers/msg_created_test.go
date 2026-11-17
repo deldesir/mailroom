@@ -37,10 +37,25 @@ func TestMsgCreated(t *testing.T) {
 	defer vc.Close()
 
 	// Ann should have 1 batch of queued messages at high priority
-	assertvk.ZCard(t, vc, fmt.Sprintf("msgs:%s|10/1", testdb.TwilioChannel.UUID), 1)
+	assertvk.ZCard(t, vc, fmt.Sprintf("{msgs}:q:%s/1", testdb.TwilioChannel.UUID), 1)
 
 	// One bulk for Cat
-	assertvk.ZCard(t, vc, fmt.Sprintf("msgs:%s|10/0", testdb.TwilioChannel.UUID), 1)
+	assertvk.ZCard(t, vc, fmt.Sprintf("{msgs}:q:%s/0", testdb.TwilioChannel.UUID), 1)
+
+	// messages with a channel or which failed for having no destination are tallied, as are the flow segments taken and
+	// the incoming message handled by a flow
+	assertvk.HGetAll(t, vc, "{tallies}:live", map[string]string{
+		"F10000|msgsin:date:2025-05-04":                              "1",
+		"F10000|msgsin:hour:12":                                      "1",
+		"F10000|segment:IbpFcIRuQUOn68xMyew-ay3O7wbmaUvciT9kIuU16ow": "1",
+		"F10000|segment:Wa2EgRMyRFeyDOPLYgPgKcfpHkdkjENzs6W52sR2d0A": "1",
+		"F10000|segment:pREWmbL4SjeXKVd0X7E7Bqxn6eu1QUPkmut_qmZ_E1U": "1",
+		"F10000|segment:sm_K4au2SfiVz5_KlfHDCgOrXkFFpEbOj1W3eIrF40M": "1",
+		"C10000|text:out@2025-05-04":                                 "2",
+		"C10002|text:out@2025-05-04":                                 "1",
+		"O1|msgs/text:nodest@2025-05-04":                             "1",
+		"O1|msgs/text:out@2025-05-04":                                "3",
+	})
 }
 
 func TestMsgCreatedNewURN(t *testing.T) {
@@ -63,7 +78,7 @@ func TestMsgCreatedTicketReply(t *testing.T) {
 
 	testdb.InsertOpenTicket(t, rt, "01992f54-5ab6-717a-a39e-e8ca91fb7262", testdb.Org1, testdb.Ann, testdb.DefaultTopic, time.Date(2025, 5, 4, 11, 30, 0, 0, time.UTC), nil)
 	closed := testdb.InsertOpenTicket(t, rt, "019a0f6c-5e3b-7d1a-9b2e-3c4d5e6f7a8b", testdb.Org1, testdb.Bob, testdb.DefaultTopic, time.Date(2015, 1, 1, 12, 30, 45, 0, time.UTC), nil)
-	rt.DB.MustExec(`UPDATE tickets_ticket SET status = 'C', closed_on = '2015-01-02T12:30:45Z', last_activity_on = '2015-01-02T12:30:45Z' WHERE id = $1`, closed.ID)
+	rt.DB.MustExec(`UPDATE tickets_ticket SET status = 'C', outcome = 'R', closed_on = '2015-01-02T12:30:45Z', last_activity_on = '2015-01-02T12:30:45Z' WHERE id = $1`, closed.ID)
 
 	runTests(t, rt, "testdata/msg_created_ticket_reply.json")
 }

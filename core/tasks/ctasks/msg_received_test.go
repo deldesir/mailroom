@@ -409,12 +409,21 @@ func TestMsgReceivedTask(t *testing.T) {
 		last = time.Now()
 	}
 
+	// incoming messages handled by flows are tallied by hour and by date
+	_, err := rt.Tallies.Flush(ctx, vc, models.NewTallyStore(rt.DB, rt.Tallies.KeyBase()), 100)
+	require.NoError(t, err)
+
+	for _, prefix := range []string{"msgsin:hour:", "msgsin:date:"} {
+		assertdb.Query(t, rt.DB, `SELECT flow_id, SUM(count)::int FROM flows_flowtally WHERE scope LIKE $1 GROUP BY flow_id`, prefix+"%").
+			Map(map[string]any{"10000": 9, "20000": 6, "20001": 3}, "%s tallies mismatch", prefix)
+	}
+
 	rt.DB.MustExec(`UPDATE orgs_org SET features = '{}' WHERE id = $1`, testdb.Org1.ID)
 
 	// check messages queued to courier
 	testsuite.AssertCourierQueues(t, rt, map[string][]int{
-		fmt.Sprintf("msgs:%s|10/1", testdb.TwilioChannel.UUID): {1, 1, 1, 1, 1, 1, 1, 1},
-		fmt.Sprintf("msgs:%s|10/1", testdb.Org2Channel.UUID):   {1, 1, 1, 1, 1, 1, 1, 1, 1},
+		fmt.Sprintf("{msgs}:q:%s/1", testdb.TwilioChannel.UUID): {1, 1, 1, 1, 1, 1, 1, 1},
+		fmt.Sprintf("{msgs}:q:%s/1", testdb.Org2Channel.UUID):   {1, 1, 1, 1, 1, 1, 1, 1, 1},
 	})
 
 	// Fred's sessions should not have a timeout because courier will set them
@@ -736,7 +745,7 @@ func TestMsgReceivedReplyLastSeenOn(t *testing.T) {
 	newLastSeenOn := getLastSeenOn(t, rt, testdb.Ann)
 	require.True(t, newLastSeenOn.After(*oldLastSeenOn))
 
-	queueKey := fmt.Sprintf("msgs:%s|10/1", testdb.TwilioChannel.UUID)
+	queueKey := fmt.Sprintf("{msgs}:q:%s/1", testdb.TwilioChannel.UUID)
 	testsuite.AssertCourierQueues(t, rt, map[string][]int{queueKey: {1}})
 
 	batches, err := valkey.ByteSlices(vc.Do("ZRANGE", queueKey, 0, -1))

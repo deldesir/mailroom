@@ -632,6 +632,58 @@ func InsertMessages(ctx context.Context, tx DBorTx, msgs []*Msg) error {
 	return BulkQuery(ctx, "insert messages", tx, sqlInsertMsgSQL, is)
 }
 
+// MsgTallies gets the tally amounts by field which count the given messages by their org, channel, type, direction and
+// the UTC day they were created on. Of messages without a channel, only those which failed for having no destination
+// are counted. Incoming messages which are inserted already handled by a flow, such as IVR input, are also counted for
+// that flow.
+func MsgTallies(msgs []*Msg) map[string]int64 {
+	amounts := make(map[string]int64)
+	for _, m := range msgs {
+		if m.Direction() == DirectionIn && m.FlowID() != NilFlowID {
+			for field, amount := range FlowMsgsInTallies(m.FlowID(), m.CreatedOn()) {
+				amounts[field] += amount
+			}
+		}
+
+		typ, dir := "text", "out"
+		if m.Type() == MsgTypeVoice {
+			typ = "voice"
+		}
+		if m.Direction() == DirectionIn {
+			dir = "in"
+		}
+
+		orgID, day := m.OrgID(), m.CreatedOn()
+
+		if m.ChannelID() == NilChannelID {
+			if m.FailedReason() == MsgFailedNoDestination {
+				amounts[TallyField(orgID, fmt.Sprintf("%s/%s:nodest", TallyMsgs, typ), day)]++
+			}
+			continue
+		}
+
+		amounts[ChannelTallyField(m.ChannelID(), typ+":"+dir, day)]++
+		amounts[TallyField(orgID, fmt.Sprintf("%s/%s:%s", TallyMsgs, typ, dir), day)]++
+	}
+	return amounts
+}
+
+// IncrementMsgTallies increments the tallies which count the given inserted messages of an org, logging rather than
+// failing on errors since the messages have already been written
+func IncrementMsgTallies(ctx context.Context, rt *runtime.Runtime, orgID OrgID, msgs []*Msg) {
+	amounts := MsgTallies(msgs)
+	if len(amounts) == 0 {
+		return
+	}
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	if err := rt.Tallies.Increment(ctx, vc, amounts); err != nil {
+		slog.Error("error incrementing msg tallies", "error", err, "org_id", orgID)
+	}
+}
+
 const sqlInsertMsgSQL = `
 INSERT INTO
 msgs_msg(uuid, text, attachments, quickreplies, locale, templating, high_priority, created_on, modified_on, sent_on, direction, status,

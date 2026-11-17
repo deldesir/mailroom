@@ -8,14 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	valkey "github.com/gomodule/redigo/redis"
-	"github.com/nyaruka/gocommon/dates"
 	"github.com/nyaruka/gocommon/i18n"
 	"github.com/nyaruka/gocommon/jsonx"
+	"github.com/nyaruka/gocommon/queues"
 	"github.com/nyaruka/gocommon/svclogs"
 	"github.com/nyaruka/gocommon/urns"
 	"github.com/nyaruka/goflow/assets"
@@ -25,11 +24,6 @@ import (
 	"github.com/nyaruka/goflow/utils"
 	"github.com/nyaruka/mailroom/v26/core/models"
 	"github.com/nyaruka/mailroom/v26/runtime"
-)
-
-const (
-	bulkPriority = 0
-	highPriority = 1
 )
 
 type MsgOrigin string
@@ -82,7 +76,6 @@ type Msg struct {
 	Locale               i18n.Locale        `json:"locale,omitempty"`
 	Templating           *Templating        `json:"templating,omitempty"`
 	HighPriority         bool               `json:"high_priority"`
-	MsgCount             int                `json:"tps_cost"`
 	CreatedOn            time.Time          `json:"created_on"`
 	ChannelUUID          assets.ChannelUUID `json:"channel_uuid"`
 	URN                  urns.URN           `json:"urn"`
@@ -123,7 +116,6 @@ func NewCourierMsg(oa *models.OrgAssets, mo *models.MsgOut, ch *models.Channel) 
 		QuickReplies: mo.QuickReplies(),
 		Locale:       mo.Locale(),
 		HighPriority: mo.HighPriority(),
-		MsgCount:     mo.MsgCount(),
 		CreatedOn:    mo.CreatedOn().In(time.UTC),
 		ChannelUUID:  ch.UUID(),
 		UserID:       mo.CreatedByID(),
@@ -183,42 +175,8 @@ func NewCourierMsg(oa *models.OrgAssets, mo *models.MsgOut, ch *models.Channel) 
 	return msg, nil
 }
 
-var queuePushScript = valkey.NewScript(6, `
--- KEYS: [QueueType, QueueName, TPS, Priority, Items, EpochSecs]
-local queueType, queueName, tps, priority, items, epochSecs = KEYS[1], KEYS[2], tonumber(KEYS[3]), KEYS[4], KEYS[5], KEYS[6]
-
--- first construct the base key for this queue from the type + name + tps, e.g. "msgs:0a77a158-1dcb-4c06-9aee-e15bdf64653e|10"
-local queueKey = queueType .. ":" .. queueName .. "|" .. tps
-
--- each queue than has two sorted sets for bulk and high priority items, e.g. "msgs:0a77..653e|10/0" vs msgs:0a77..653e|10/1"
-local priorityQueueKey = queueKey .. "/" .. priority
-
--- add the items to the sorted set using the full timestamp (e.g. 1636556789.123456) as the score
-redis.call("ZADD", priorityQueueKey, epochSecs, items)
-
--- if we have a TPS limit, check the transaction counter for this epoch second to see if have already reached it
-local curr = -1
-if tps > 0 then
-  local tpsKey = queueKey .. ":tps:" .. math.floor(epochSecs) -- e.g. "msgs:0a77..4653e|10:tps:1636556789"
-  curr = tonumber(redis.call("GET", tpsKey))
-end
-
--- if we haven't hit the limit, add this queue to set of active queues 
-if not curr or curr < tps then
-  redis.call("ZINCRBY", queueType .. ":active", 0, queueKey)
-  return 1
-else
-  return 0
-end
-`)
-
 // PushCourierBatch pushes a batch of messages for a single contact and channel onto the appropriate courier queue
-func PushCourierBatch(vc valkey.Conn, oa *models.OrgAssets, ch *models.Channel, msgs []*models.MsgOut, timestamp string) error {
-	priority := bulkPriority
-	if msgs[0].HighPriority() {
-		priority = highPriority
-	}
-
+func PushCourierBatch(ctx context.Context, rt *runtime.Runtime, vc valkey.Conn, oa *models.OrgAssets, ch *models.Channel, msgs []*models.MsgOut) error {
 	batch := make([]*Msg, len(msgs))
 	for i, s := range msgs {
 		var err error
@@ -230,20 +188,14 @@ func PushCourierBatch(vc valkey.Conn, oa *models.OrgAssets, ch *models.Channel, 
 
 	batchJSON := jsonx.MustMarshal(batch)
 
-	_, err := queuePushScript.Do(vc, "msgs", ch.UUID(), ch.TPS(), priority, batchJSON, timestamp)
-	return err
+	return rt.Queues.Courier.Push(ctx, vc, queues.OwnerID(ch.UUID()), ch.TPS(), msgs[0].HighPriority(), batchJSON)
 }
 
 // QueueCourierMessages queues messages for a single contact to Courier
-func QueueCourierMessages(vc valkey.Conn, oa *models.OrgAssets, contactID models.ContactID, channel *models.Channel, msgs []*models.MsgOut) error {
+func QueueCourierMessages(ctx context.Context, rt *runtime.Runtime, vc valkey.Conn, oa *models.OrgAssets, contactID models.ContactID, channel *models.Channel, msgs []*models.MsgOut) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-
-	// get the time in seconds since the epoch as a floating point number
-	// e.g. 2021-11-10T15:10:49.123456+00:00 => "1636557205.123456"
-	now := dates.Now()
-	epochSeconds := strconv.FormatFloat(float64(now.UnixNano()/int64(time.Microsecond))/float64(1000000), 'f', 6, 64)
 
 	// we batch msgs by priority
 	batch := make([]*models.MsgOut, 0, len(msgs))
@@ -254,7 +206,7 @@ func QueueCourierMessages(vc valkey.Conn, oa *models.OrgAssets, contactID models
 	commitBatch := func() error {
 		if len(batch) > 0 {
 			start := time.Now()
-			err := PushCourierBatch(vc, oa, channel, batch, epochSeconds)
+			err := PushCourierBatch(ctx, rt, vc, oa, channel, batch)
 			if err != nil {
 				return err
 			}
@@ -285,24 +237,34 @@ func QueueCourierMessages(vc valkey.Conn, oa *models.OrgAssets, contactID models
 	return commitBatch()
 }
 
-var queueClearScript = valkey.NewScript(3, `
--- KEYS: [QueueType, QueueName, TPS]
-local queueType, queueName, tps = KEYS[1], KEYS[2], tonumber(KEYS[3])
+// queues in the layout courier used before, named by channel and TPS, e.g. msgs:<uuid>|10, which may still hold
+// messages queued by older versions. A channel can have one for each TPS it's been queued with. Nothing queues to this
+// layout any more, so this can go once those queues have drained.
+var legacyQueueClearScript = valkey.NewScript(3, `
+-- KEYS: [Active, Throttled, Future]
+-- ARGV: [ChannelUUID, TPS]
+local prefix = "msgs:" .. ARGV[1] .. "|"
 
--- first construct the base key for this queue from the type + name + tps, e.g. "msgs:0a77a158-1dcb-4c06-9aee-e15bdf64653e|10"
-local queueKey = queueType .. ":" .. queueName .. "|" .. tps
+local queues = {prefix .. ARGV[2]}
+for _, set in ipairs(KEYS) do
+  for _, queue in ipairs(redis.call("ZRANGE", set, 0, -1)) do
+    if string.sub(queue, 1, #prefix) == prefix then
+      table.insert(queues, queue)
+    end
+  end
+end
 
--- clear the sorted sets for the key
-redis.call("DEL", queueKey .. "/1")
-redis.call("DEL", queueKey .. "/0")
-
--- reset queue to zero
-redis.call("ZADD", queueType .. ":active", 0, queueKey)
+for _, queue in ipairs(queues) do
+  redis.call("DEL", queue .. "/1", queue .. "/0")
+end
 `)
 
 // ClearCourierQueues clears the courier queues (priority and bulk) for the given channel
-func ClearCourierQueues(vc valkey.Conn, ch *models.Channel) error {
-	_, err := queueClearScript.Do(vc, "msgs", ch.UUID(), ch.TPS())
+func ClearCourierQueues(ctx context.Context, rt *runtime.Runtime, vc valkey.Conn, ch *models.Channel) error {
+	if err := rt.Queues.Courier.Clear(ctx, vc, queues.OwnerID(ch.UUID())); err != nil {
+		return err
+	}
+	_, err := legacyQueueClearScript.Do(vc, "msgs:active", "msgs:throttled", "msgs:future", ch.UUID(), ch.TPS())
 	return err
 }
 

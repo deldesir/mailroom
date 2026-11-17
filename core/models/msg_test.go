@@ -1093,3 +1093,66 @@ func TestMsgTemplating(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Nil(t, s.Templating)
 }
+
+func TestMsgTallies(t *testing.T) {
+	ctx, rt := testsuite.Runtime(t)
+
+	vc := rt.VK.Get()
+	defer vc.Close()
+
+	defer dates.SetNowFunc(time.Now)
+
+	// tallies are by the UTC day the message was created on
+	dates.SetNowFunc(dates.NewFixedNow(time.Date(2026, 11, 3, 23, 30, 0, 0, time.FixedZone("", -2*3600))))
+
+	msgs := []*models.Msg{
+		models.NewIncomingAndroid(testdb.Org1.ID, testdb.AndroidChannel.ID, testdb.Ann.ID, testdb.Ann.URNID, "one", time.Now()),
+		models.NewIncomingAndroid(testdb.Org1.ID, testdb.AndroidChannel.ID, testdb.Bob.ID, testdb.Bob.URNID, "two", time.Now()),
+		models.NewIncomingAndroid(testdb.Org1.ID, models.NilChannelID, testdb.Cat.ID, testdb.Cat.URNID, "three", time.Now()),
+	}
+
+	assert.Equal(t, map[string]int64{"C10003|text:in@2026-11-04": 2, "O1|msgs/text:in@2026-11-04": 2}, models.MsgTallies(msgs))
+	assert.Equal(t, map[string]int64{}, models.MsgTallies(msgs[2:]))
+
+	// of channel-less messages, only those which failed for having no destination are counted
+	oa := testdb.Org1.Load(t, rt)
+	flow, err := oa.FlowByID(testdb.Favorites.ID)
+	require.NoError(t, err)
+	mc, _, _ := testdb.Ann.Load(t, rt, oa)
+	noDest := events.NewMsgCreated(core.NewMsgOut(urns.NilURN, nil, &core.MsgContent{Text: "four"}, nil, "", core.UnsendableReasonNoRoute), "", "")
+	out, err := models.NewOutgoingFlowMsg(rt, oa.Org(), nil, mc, flow, noDest, nil)
+	require.NoError(t, err)
+	require.Equal(t, models.MsgFailedNoDestination, out.FailedReason())
+	msgs = append(msgs, out.Msg)
+
+	stopped := events.NewMsgCreated(core.NewMsgOut(urns.NilURN, nil, &core.MsgContent{Text: "five"}, nil, "", core.UnsendableReasonContactStopped), "", "")
+	out, err = models.NewOutgoingFlowMsg(rt, oa.Org(), nil, mc, flow, stopped, nil)
+	require.NoError(t, err)
+	require.Equal(t, models.MsgFailedContact, out.FailedReason())
+	msgs = append(msgs, out.Msg)
+
+	assert.Equal(t, map[string]int64{"O1|msgs/text:nodest@2026-11-04": 1}, models.MsgTallies(msgs[2:]))
+	assert.Equal(t, map[string]int64{}, models.MsgTallies(msgs[4:]))
+
+	models.IncrementMsgTallies(ctx, rt, testdb.Org1.ID, msgs)
+
+	assertvk.HGetAll(t, vc, "{tallies}:live", map[string]string{
+		"C10003|text:in@2026-11-04":      "2",
+		"O1|msgs/text:in@2026-11-04":     "2",
+		"O1|msgs/text:nodest@2026-11-04": "1",
+	})
+
+	// channel tallies expire but msg type tallies are kept forever
+	_, err = rt.Tallies.Flush(ctx, vc, models.NewTallyStore(rt.DB, rt.Tallies.KeyBase()), 10)
+	require.NoError(t, err)
+
+	assertdb.Query(t, rt.DB, `SELECT scope, expires_on::text FROM orgs_orgtally WHERE org_id = $1 ORDER BY scope`, testdb.Org1.ID).Map(
+		map[string]any{
+			"msgs/text:in@2026-11-04":     nil,
+			"msgs/text:nodest@2026-11-04": nil,
+		},
+	)
+	assertdb.Query(t, rt.DB, `SELECT scope, expires_on::text FROM channels_channeltally WHERE channel_id = $1`, testdb.AndroidChannel.ID).Map(
+		map[string]any{"text:in@2026-11-04": "2027-12-09"},
+	)
+}
